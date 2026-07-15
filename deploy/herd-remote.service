@@ -1,0 +1,17 @@
+[Unit]
+Description=herd-remote - phone control surface for herdr sessions
+After=default.target
+
+[Service]
+# Binary built from this repo (go build -o herd-remote .)
+ExecStart=%h/herd-remote/herd-remote
+# Bind loopback only; LAN reachability is provided by `expose-port add 8787`.
+Environment=HERD_REMOTE_ADDR=127.0.0.1:8787
+# herdr + herd-spawn live in ~/.local/bin; systemd --user has a minimal PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Password is read from ~/.config/herd-remote/password (mode 0600).
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

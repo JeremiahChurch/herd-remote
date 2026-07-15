@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>herd-remote</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3140;
+    --fg:#e6edf3; --muted:#8b949e;
+    --idle:#3fb950; --working:#58a6ff; --blocked:#f85149; --done:#6e7681; --unknown:#d29922;
+    --accent:#58a6ff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--fg);
+    font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-tap-highlight-color:transparent}
+  header{position:sticky;top:0;z-index:5;background:var(--panel);
+    border-bottom:1px solid var(--line);padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    display:flex;align-items:center;gap:10px}
+  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+  header .sp{flex:1}
+  button{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;cursor:pointer}
+  button:active{transform:translateY(1px)}
+  .btn-accent{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
+  .wrap{max-width:760px;margin:0 auto;padding:12px 12px calc(env(safe-area-inset-bottom) + 24px)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px}
+  .card:active{background:var(--panel2)}
+  .dot{width:11px;height:11px;border-radius:50%;flex:none;box-shadow:0 0 0 3px rgba(255,255,255,.03)}
+  .idle{background:var(--idle)} .working{background:var(--working)}
+  .blocked{background:var(--blocked);animation:pulse 1s infinite}
+  .done{background:var(--done)} .unknown{background:var(--unknown)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .meta{flex:1;min-width:0}
+  .meta .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .meta .s{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .badge{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
+    border:1px solid var(--line);border-radius:6px;padding:2px 6px}
+  .agentTag{font-size:10px;color:var(--muted)}
+  pre#scroll{background:#010409;border:1px solid var(--line);border-radius:12px;
+    padding:12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+    white-space:pre-wrap;word-break:break-word;max-height:52vh;overflow:auto;margin:0 0 12px}
+  .row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .row > button{flex:1;min-width:0}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px}
+  .promptbar{display:flex;gap:8px;margin:10px 0}
+  .promptbar input,.promptbar textarea{flex:1;background:var(--panel2);border:1px solid var(--line);
+    color:var(--fg);border-radius:10px;padding:12px;font:inherit;resize:vertical}
+  input,select,textarea{font:inherit}
+  .list-input{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+    border-radius:10px;padding:12px;margin-bottom:10px}
+  label.fld{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px}
+  .danger{color:var(--blocked);border-color:var(--blocked)}
+  .hidden{display:none}
+  .empty{color:var(--muted);text-align:center;padding:40px 0}
+  .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 16px);transform:translateX(-50%);
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 16px;
+    z-index:20;opacity:0;transition:opacity .2s;max-width:90%}
+  .toast.show{opacity:1}
+  .center{max-width:360px;margin:16vh auto 0;padding:0 20px;text-align:center}
+  .center input{width:100%;text-align:center;font-size:18px;margin:16px 0}
+  a.link{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login" class="center hidden">
+  <h1>herd-remote</h1>
+  <p style="color:var(--muted)">Enter access password</p>
+  <input id="pw" type="password" inputmode="text" autocomplete="current-password" placeholder="password">
+  <button class="btn-accent" style="width:100%" onclick="doLogin()">Unlock</button>
+  <p id="loginErr" style="color:var(--blocked)"></p>
+</div>
+
+<!-- LIST -->
+<div id="listView" class="hidden">
+  <header>
+    <h1>Sessions</h1><span class="sp"></span>
+    <button onclick="showSpawn()">＋ Spawn</button>
+    <button onclick="refresh()">↻</button>
+  </header>
+  <div class="wrap" id="cards"></div>
+</div>
+
+<!-- DETAIL -->
+<div id="detailView" class="hidden">
+  <header>
+    <button onclick="backToList()">‹</button>
+    <h1 id="dTitle">session</h1><span class="sp"></span>
+    <button onclick="renameCur()">✎</button>
+  </header>
+  <div class="wrap">
+    <div class="row" style="margin-bottom:6px">
+      <span class="badge" id="dAgent"></span>
+      <span class="badge" id="dStatus"></span>
+      <span class="sp"></span>
+      <label style="color:var(--muted);font-size:12px"><input type="checkbox" id="auto" checked> auto</label>
+    </div>
+    <pre id="scroll">loading…</pre>
+
+    <div class="grid4">
+      <button class="btn-accent" onclick="key('Enter')">✔ Enter</button>
+      <button onclick="key('Escape')">✕ Esc</button>
+      <button onclick="key('C-c')">⎉ C-c</button>
+      <button onclick="clearSession()">/clear</button>
+    </div>
+    <div class="grid4">
+      <button onclick="key('Up')">▲</button>
+      <button onclick="key('Down')">▼</button>
+      <button onclick="key('y')">y</button>
+      <button onclick="key('n')">n</button>
+    </div>
+    <div class="grid4">
+      <button onclick="key('1')">1</button>
+      <button onclick="key('2')">2</button>
+      <button onclick="key('3')">3</button>
+      <button onclick="key('Tab')">⇥ Tab</button>
+    </div>
+
+    <div class="promptbar">
+      <textarea id="prompt" rows="2" placeholder="type a prompt…"></textarea>
+      <button class="btn-accent" onclick="sendPrompt()">Send</button>
+    </div>
+    <button class="danger" style="width:100%" onclick="closeSession()">Close session (kill)</button>
+  </div>
+</div>
+
+<!-- SPAWN -->
+<div id="spawnView" class="hidden">
+  <header>
+    <button onclick="backToList()">‹</button>
+    <h1>Spawn</h1>
+  </header>
+  <div class="wrap">
+    <label class="fld">Folder</label>
+    <input id="folderFilter" class="list-input" placeholder="filter folders…" oninput="renderFolders()">
+    <select id="folder" class="list-input" size="8" style="height:auto"></select>
+    <label class="fld">First prompt (optional)</label>
+    <textarea id="spawnPrompt" class="list-input" rows="3" placeholder="what should it do?"></textarea>
+    <label class="fld">Model (optional, e.g. opus)</label>
+    <input id="spawnModel" class="list-input" placeholder="">
+    <button class="btn-accent" style="width:100%" onclick="doSpawn()">Spawn claude</button>
+    <p id="spawnMsg" style="color:var(--muted)"></p>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+let cur=null;         // current session object
+let folders=[];       // spawn folder list
+let pollTimer=null;
+
+const $=id=>document.getElementById(id);
+function show(view){for(const v of ['login','listView','detailView','spawnView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1600);}
+
+async function api(path,opts){
+  const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));
+  if(r.status===401){show('login');throw new Error('unauth');}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||('http '+r.status));
+  return j;
+}
+
+// --- login ---
+async function doLogin(){
+  $('loginErr').textContent='';
+  try{
+    await api('/api/login',{method:'POST',body:JSON.stringify({password:$('pw').value})});
+    $('pw').value='';
+    boot();
+  }catch(e){$('loginErr').textContent=e.message;}
+}
+$('pw')&&$('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+
+// --- list ---
+async function refresh(){
+  try{
+    const j=await api('/api/sessions');
+    renderCards(j.sessions||[]);
+  }catch(e){if(e.message!=='unauth')toast(e.message);}
+}
+function renderCards(sessions){
+  const c=$('cards');c.innerHTML='';
+  if(!sessions.length){c.innerHTML='<div class="empty">no sessions</div>';return;}
+  for(const s of sessions){
+    const d=document.createElement('div');d.className='card';
+    d.onclick=()=>openDetail(s);
+    d.innerHTML=`<span class="dot ${s.status||'unknown'}"></span>
+      <div class="meta"><div class="t">${esc(s.label||s.name||'—')}</div>
+      <div class="s">${esc(shortCwd(s.cwd))}</div></div>
+      <div style="text-align:right"><div class="agentTag">${esc(s.agent||'')}</div>
+      <div class="badge">${esc(s.status||'?')}</div></div>`;
+    c.appendChild(d);
+  }
+}
+function shortCwd(p){if(!p)return'';return p.replace(/^\/home\/[^/]+/,'~');}
+function esc(s){return(s==null?'':String(s)).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
+
+// --- detail ---
+function openDetail(s){cur=s;show('detailView');
+  $('dTitle').textContent=s.label||s.name||'session';
+  $('dAgent').textContent=s.agent||'';
+  $('dStatus').textContent=s.status||'';
+  $('scroll').textContent='loading…';
+  readScroll();startPoll();}
+function backToList(){stopPoll();show('listView');refresh();}
+function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked)readScroll();},2500);}
+function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
+
+async function readScroll(){
+  if(!cur)return;
+  try{
+    const j=await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/read?lines=50`);
+    const el=$('scroll');const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<40;
+    el.textContent=j.text||'';
+    if(atBottom)el.scrollTop=el.scrollHeight;
+  }catch(e){/* transient */}
+}
+async function key(k){
+  if(!cur)return;
+  try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/key`,{method:'POST',body:JSON.stringify({key:k})});
+    toast(k);setTimeout(readScroll,300);}catch(e){toast(e.message);}
+}
+async function sendPrompt(){
+  if(!cur)return;const t=$('prompt').value;if(!t.trim())return;
+  try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:t})});
+    $('prompt').value='';toast('sent');setTimeout(readScroll,400);}catch(e){toast(e.message);}
+}
+async function clearSession(){
+  if(!cur)return;
+  try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:'/clear'})});
+    toast('/clear');setTimeout(readScroll,400);}catch(e){toast(e.message);}
+}
+async function renameCur(){
+  if(!cur)return;const name=prompt2('Rename session',cur.label||'');if(!name)return;
+  try{await api(`/api/sessions/${encodeURIComponent(cur.workspace_id)}/rename`,{method:'POST',body:JSON.stringify({label:name})});
+    cur.label=name;$('dTitle').textContent=name;toast('renamed');}catch(e){toast(e.message);}
+}
+async function closeSession(){
+  if(!cur)return;if(!confirm('Kill this session?'))return;
+  try{await api(`/api/sessions/${encodeURIComponent(cur.workspace_id)}/close`,{method:'POST'});
+    toast('closed');backToList();}catch(e){toast(e.message);}
+}
+function prompt2(msg,def){return window.prompt(msg,def);} // simple; native prompt is fine on mobile
+
+// --- spawn ---
+async function showSpawn(){show('spawnView');$('spawnMsg').textContent='';
+  try{const j=await api('/api/folders');folders=j.folders||[];renderFolders();}catch(e){toast(e.message);}}
+function renderFolders(){
+  const f=$('folderFilter').value.toLowerCase();const sel=$('folder');sel.innerHTML='';
+  for(const d of folders){if(f&&!d.short.toLowerCase().includes(f))continue;
+    const o=document.createElement('option');o.value=d.path;o.textContent=d.short;sel.appendChild(o);}
+  if(sel.options.length)sel.selectedIndex=0;
+}
+async function doSpawn(){
+  const dir=$('folder').value;if(!dir){toast('pick a folder');return;}
+  $('spawnMsg').textContent='spawning…';
+  try{
+    const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
+      dir,prompt:$('spawnPrompt').value,model:$('spawnModel').value.trim(),background:true})});
+    $('spawnMsg').textContent=j.result||'spawned';
+    setTimeout(()=>{backToList();},700);
+  }catch(e){$('spawnMsg').textContent=e.message;}
+}
+
+// --- boot ---
+async function boot(){
+  try{await api('/api/sessions').then(j=>{show('listView');renderCards(j.sessions||[]);});
+    if(refreshLoop)clearInterval(refreshLoop);
+    refreshLoop=setInterval(()=>{if(!$('listView').classList.contains('hidden'))refresh();},4000);
+  }catch(e){if(e.message==='unauth')show('login');}
+}
+let refreshLoop=null;
+boot();
+</script>
+</body>
+</html>
