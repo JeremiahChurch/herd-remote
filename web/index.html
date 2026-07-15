@@ -164,7 +164,8 @@
 <div id="toast" class="toast"></div>
 
 <script>
-let cur=null, folders=[], pollTimer=null, refreshLoop=null;
+let cur=null, folders=[], pollTimer=null, refreshLoop=null, reading=false;
+const STATUSES=['idle','working','blocked','done','unknown'];
 const $=id=>document.getElementById(id);
 function show(view){for(const v of ['login','listView','detailView','spawnView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1600);}
@@ -172,7 +173,7 @@ function escHtml(s){return(s==null?'':String(s)).replace(/[&<>"]/g,m=>({'&':'&am
 
 async function api(path,opts){
   const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));
-  if(r.status===401){show('login');throw new Error('unauth');}
+  if(r.status===401){stopPoll();cur=null;show('login');throw new Error('unauth');}
   const j=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(j.error||('http '+r.status));
   return j;
@@ -232,7 +233,8 @@ function renderCards(sessions){
   if(!sessions.length){c.innerHTML='<div class="empty">no sessions</div>';return;}
   for(const s of sessions){
     const d=document.createElement('div');d.className='card';d.onclick=()=>openDetail(s);
-    d.innerHTML=`<span class="dot ${s.status||'unknown'}"></span>
+    const st=STATUSES.includes(s.status)?s.status:'unknown';
+    d.innerHTML=`<span class="dot ${st}"></span>
       <div class="meta"><div class="t">${escHtml(s.label||s.name||'—')}</div>
       <div class="s">${escHtml(shortCwd(s.cwd))}</div></div>
       <div style="text-align:right"><div class="agentTag">${escHtml(s.agent||'')}</div>
@@ -262,13 +264,15 @@ function renderDetail(s){cur=s;show('detailView');
 function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked)readScroll();},2500);}
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
 async function readScroll(){
-  if(!cur)return;
+  if(!cur||reading)return;
+  const pane=cur.pane_id;reading=true;
   try{
-    const j=await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/read?lines=60`);
+    const j=await api(`/api/sessions/${encodeURIComponent(pane)}/read?lines=60`);
+    if(!cur||cur.pane_id!==pane)return; // navigated away mid-request
     const box=$('dScroll'),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
     $('scroll').innerHTML=ansiToHtml(j.text||'');
     if(atBottom)box.scrollTop=box.scrollHeight;
-  }catch(e){}
+  }catch(e){}finally{reading=false;}
 }
 async function key(k){if(!cur)return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/key`,{method:'POST',body:JSON.stringify({key:k})});toast(k);setTimeout(readScroll,300);}
@@ -297,9 +301,12 @@ function renderFolders(){
   if(sel.options.length)sel.selectedIndex=0;
 }
 async function doSpawn(agent){
-  // Target = whatever's typed (any path, even a hidden one like ~/.ssh) or the picked option.
-  // If it isn't a real dir, herd-spawn fails and the error comes back here.
+  // If the input looks like a path (starts with / ~ or ./), use it verbatim - even a
+  // hidden dir like ~/.ssh. Otherwise treat the text as a filter word and use the
+  // highlighted list option. Invalid paths just come back as a herd-spawn error.
   let dir=$('folderFilter').value.trim();
+  const looksPath=/^([\/~]|\.\.?\/)/.test(dir);
+  if(dir&&!looksPath&&$('folder').value)dir=$('folder').value;
   if(!dir)dir=$('folder').value;
   if(!dir){toast('pick or type a folder');return;}
   $('spawnMsg').textContent=`spawning ${agent}…`;

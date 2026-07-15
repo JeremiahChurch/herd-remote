@@ -36,6 +36,12 @@ can only send known-safe tokens to a pane.
 - **App auth:** one shared password -> a 30-day HMAC-signed HttpOnly cookie
   ("super long login session"). Password comes from `HERD_REMOTE_PASSWORD` or
   `~/.config/herd-remote/password` (mode 0600).
+- **Caveat - plain HTTP:** the LAN hop is unencrypted HTTP, so the password and
+  session cookie are visible to anyone who can sniff your LAN. The device-IP
+  firewall scope above is the mitigation. If you want encryption, front it with a
+  reverse proxy that terminates TLS (or run it behind Tailscale) and set the cookie
+  `Secure`. Authenticated users have full terminal authority by design - only give
+  the password to people you'd hand a keyboard.
 
 ## Quick start
 

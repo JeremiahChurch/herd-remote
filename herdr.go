@@ -247,7 +247,8 @@ func Spawn(dir, prompt, model, agent string, background bool) (string, error) {
 	if model != "" {
 		args = append(args, "-m", model)
 	}
-	args = append(args, dir)
+	// `--` stops flag parsing so a dir like "--list" is treated as a path, not an option.
+	args = append(args, "--", dir)
 	if prompt != "" {
 		args = append(args, prompt)
 	}

@@ -26,9 +26,21 @@ import (
 var webFS embed.FS
 
 var (
-	reSpawnWid  = regexp.MustCompile(`workspace\s+(\S+)`)
-	reSpawnPane = regexp.MustCompile(`pane=(\S+)`)
+	// Anchored to herd-spawn's exact line: spawned workspace <wid> "<label>"  dir=<dir>  pane=<pane>
+	reSpawnWid  = regexp.MustCompile(`(?m)^spawned workspace (\S+) `)
+	reSpawnPane = regexp.MustCompile(`(?m) pane=(\S+)\s*$`)
+	// herdr pane/workspace ids look like w7C or wAJ:p1 - letters, digits, ':' only.
+	reHerdrID = regexp.MustCompile(`^[A-Za-z0-9:_-]+$`)
 )
+
+// methodGuard rejects the request unless it uses the expected HTTP method.
+func methodGuard(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return false
+	}
+	return true
+}
 
 const (
 	cookieName    = "herd_remote"
@@ -169,11 +181,17 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodPost) {
+		return
+	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func handleSessions(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
 	sessions, err := ListSessions()
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
@@ -183,6 +201,9 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFolders(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
 	dirs, err := Folders()
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())
@@ -202,6 +223,9 @@ func handleFolders(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodPost) {
+		return
+	}
 	var body struct {
 		Dir        string `json:"dir"`
 		Prompt     string `json:"prompt"`
@@ -244,6 +268,18 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, action := parts[0], parts[1]
+	if !reHerdrID.MatchString(id) {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	// read is a GET; everything else mutates and must be POST.
+	if action == "read" {
+		if !methodGuard(w, r, http.MethodGet) {
+			return
+		}
+	} else if !methodGuard(w, r, http.MethodPost) {
+		return
+	}
 
 	switch action {
 	case "read":
@@ -252,6 +288,11 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 			if n, err := strconv.Atoi(l); err == nil {
 				lines = n
 			}
+		}
+		if lines < 1 {
+			lines = 1
+		} else if lines > 500 {
+			lines = 500
 		}
 		text, err := ReadPane(id, lines)
 		if err != nil {
@@ -358,7 +399,7 @@ func main() {
 		Addr:         addr,
 		Handler:      logRequests(mux),
 		ReadTimeout:  20 * time.Second,
-		WriteTimeout: 20 * time.Second,
+		WriteTimeout: 45 * time.Second, // > worst-case 2x herdr CLI timeout in ListSessions
 	}
 	log.Printf("herd-remote listening on http://%s", addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

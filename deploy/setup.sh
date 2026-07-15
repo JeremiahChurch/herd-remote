@@ -13,12 +13,17 @@ echo ">> building"
 echo ">> password"
 mkdir -p "$CFG"; chmod 700 "$CFG"
 if [[ ! -s "$CFG/password" ]]; then
-  read -rsp "Set access password: " pw; echo
-  printf '%s' "$pw" > "$CFG/password"; chmod 600 "$CFG/password"
+  pw=""
+  while [[ -z "$pw" ]]; do
+    read -rsp "Set access password: " pw; echo
+    [[ -z "$pw" ]] && echo "   password cannot be empty"
+  done
+  printf '%s' "$pw" > "$CFG/password"
   echo "   saved to $CFG/password"
 else
   echo "   using existing $CFG/password"
 fi
+chmod 600 "$CFG/password"   # always enforce, even on a pre-existing file
 
 echo ">> installing systemd --user service"
 mkdir -p "$HOME/.config/systemd/user"
