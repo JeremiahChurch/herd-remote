@@ -200,6 +200,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Dir        string `json:"dir"`
 		Prompt     string `json:"prompt"`
 		Model      string `json:"model"`
+		Agent      string `json:"agent"`
 		Background bool   `json:"background"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -210,7 +211,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "dir required")
 		return
 	}
-	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Background)
+	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Agent, body.Background)
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
@@ -274,12 +275,13 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 	case "rename":
 		var body struct {
 			Label string `json:"label"`
+			Pane  string `json:"pane"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 			apiError(w, http.StatusBadRequest, "bad body")
 			return
 		}
-		if err := RenameWorkspace(id, body.Label); err != nil {
+		if err := Rename(id, body.Pane, body.Label); err != nil {
 			apiError(w, http.StatusBadGateway, err.Error())
 			return
 		}

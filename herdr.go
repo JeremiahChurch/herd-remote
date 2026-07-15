@@ -168,7 +168,8 @@ func ReadPane(pane string, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 40
 	}
-	out, err := run(herdrBin, "agent", "read", pane, "--source", "visible", "--lines", fmt.Sprint(lines))
+	// --format ansi keeps SGR color codes so the UI can render them.
+	out, err := run(herdrBin, "agent", "read", pane, "--source", "visible", "--lines", fmt.Sprint(lines), "--format", "ansi")
 	if err != nil {
 		return "", err
 	}
@@ -202,14 +203,26 @@ func SendKey(pane, key string) error {
 	return err
 }
 
-// RenameWorkspace changes the nav label of a workspace.
-func RenameWorkspace(workspaceID, label string) error {
+// Rename updates every place herdr shows a name for a session: the workspace
+// label (left-nav), the agent label, and the pane label (both shown on pane
+// borders / the agents panel). herdr has no way to rename an agent's *internal*
+// session (Claude/Codex don't expose that), but this keeps all herdr surfaces
+// consistent instead of leaving the stale folder name on the pane border.
+func Rename(workspaceID, paneID, label string) error {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		return fmt.Errorf("empty label")
 	}
-	_, err := run(herdrBin, "workspace", "rename", workspaceID, label)
-	return err
+	// Workspace label is the authoritative nav name; fail if it errors.
+	if _, err := run(herdrBin, "workspace", "rename", workspaceID, label); err != nil {
+		return err
+	}
+	// Agent + pane labels are best-effort (a pane may have no live agent).
+	if paneID != "" {
+		_, _ = run(herdrBin, "agent", "rename", paneID, label)
+		_, _ = run(herdrBin, "pane", "rename", paneID, label)
+	}
+	return nil
 }
 
 // CloseWorkspace tears down a workspace (kills the session).
@@ -218,9 +231,16 @@ func CloseWorkspace(workspaceID string) error {
 	return err
 }
 
-// Spawn creates a new workspace in dir and launches claude, optionally seeded.
-func Spawn(dir, prompt, model string, background bool) (string, error) {
-	args := []string{}
+// Spawn creates a new workspace in dir and launches the chosen agent, optionally
+// seeded. agent is "claude" (default) or "codex".
+func Spawn(dir, prompt, model, agent string, background bool) (string, error) {
+	if agent == "" {
+		agent = "claude"
+	}
+	if agent != "claude" && agent != "codex" {
+		return "", fmt.Errorf("unknown agent: %q", agent)
+	}
+	args := []string{"-a", agent}
 	if background {
 		args = append(args, "-b")
 	}
