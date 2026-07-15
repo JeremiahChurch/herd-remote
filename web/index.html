@@ -144,9 +144,11 @@
     <h1>Spawn</h1>
   </header>
   <div class="scrollwrap"><div class="wrap">
-    <label class="fld">Folder</label>
-    <input id="folderFilter" class="list-input" placeholder="filter folders…" oninput="renderFolders()">
-    <select id="folder" class="list-input" size="8" style="height:auto"></select>
+    <label class="fld">Folder — pick below, or type any path (even hidden, e.g. ~/.ssh)</label>
+    <input id="folderFilter" class="list-input" placeholder="type a path or filter…"
+      oninput="renderFolders()" autocapitalize="off" autocomplete="off" spellcheck="false">
+    <select id="folder" class="list-input" size="8" style="height:auto"
+      onchange="$('folderFilter').value=this.options[this.selectedIndex].textContent"></select>
     <label class="fld">First prompt (optional)</label>
     <textarea id="spawnPrompt" class="list-input" rows="3" placeholder="what should it do?"></textarea>
     <label class="fld">Model (optional; blank = agent default, e.g. Opus 4.8 for Claude)</label>
@@ -240,12 +242,23 @@ function renderCards(sessions){
 }
 function shortCwd(p){return p?p.replace(/^\/home\/[^/]+/,'~'):'';}
 
+// ---------- navigation (History API so the browser/phone Back button works) ----------
+function navTo(st){history.pushState(st,'');applyState(st);}
+function backToList(){history.back();}
+function applyState(st){
+  st=st||{view:'list'};
+  if(st.view==='detail'&&st.s){renderDetail(st.s);return;}
+  if(st.view==='spawn'){renderSpawn();return;}
+  stopPoll();show('listView');refresh();
+}
+window.addEventListener('popstate',e=>applyState(e.state));
+
 // ---------- detail ----------
-function openDetail(s){cur=s;show('detailView');
+function openDetail(s){navTo({view:'detail',s});}
+function renderDetail(s){cur=s;show('detailView');
   $('dTitle').textContent=s.label||s.name||'session';
   $('dAgent').textContent=s.agent||'';$('dStatus').textContent=s.status||'';
   $('scroll').textContent='loading…';readScroll();startPoll();}
-function backToList(){stopPoll();show('listView');refresh();}
 function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked)readScroll();},2500);}
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
 async function readScroll(){
@@ -274,7 +287,8 @@ async function closeSession(){if(!cur)return;if(!confirm('Kill this session?'))r
   catch(e){toast(e.message);}}
 
 // ---------- spawn ----------
-async function showSpawn(){show('spawnView');$('spawnMsg').textContent='';
+function showSpawn(){navTo({view:'spawn'});}
+async function renderSpawn(){stopPoll();show('spawnView');$('spawnMsg').textContent='';
   try{const j=await api('/api/folders');folders=j.folders||[];renderFolders();}catch(e){toast(e.message);}}
 function renderFolders(){
   const f=$('folderFilter').value.toLowerCase(),sel=$('folder');sel.innerHTML='';
@@ -283,17 +297,27 @@ function renderFolders(){
   if(sel.options.length)sel.selectedIndex=0;
 }
 async function doSpawn(agent){
-  const dir=$('folder').value;if(!dir){toast('pick a folder');return;}
+  // Target = whatever's typed (any path, even a hidden one like ~/.ssh) or the picked option.
+  // If it isn't a real dir, herd-spawn fails and the error comes back here.
+  let dir=$('folderFilter').value.trim();
+  if(!dir)dir=$('folder').value;
+  if(!dir){toast('pick or type a folder');return;}
   $('spawnMsg').textContent=`spawning ${agent}…`;
   try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
     dir,agent,prompt:$('spawnPrompt').value,model:$('spawnModel').value.trim(),background:true})});
-    $('spawnMsg').textContent=j.result||'spawned';setTimeout(backToList,800);
+    $('spawnMsg').textContent=j.result||'spawned';
+    if(j.pane_id){ // jump straight into the new session instead of back to the list
+      const s={workspace_id:j.workspace_id,pane_id:j.pane_id,agent,
+        label:(dir.replace(/\/+$/,'').split('/').pop()||dir),name:'',status:'working',cwd:dir};
+      history.replaceState({view:'detail',s},'');renderDetail(s);
+    }else{setTimeout(backToList,800);}
   }catch(e){$('spawnMsg').textContent=e.message;}
 }
 
 // ---------- boot ----------
 async function boot(){
-  try{const j=await api('/api/sessions');show('listView');renderCards(j.sessions||[]);
+  try{const j=await api('/api/sessions');history.replaceState({view:'list'},'');
+    show('listView');renderCards(j.sessions||[]);
     if(refreshLoop)clearInterval(refreshLoop);
     refreshLoop=setInterval(()=>{if(!$('listView').classList.contains('hidden'))refresh();},4000);
   }catch(e){if(e.message==='unauth')show('login');}

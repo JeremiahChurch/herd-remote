@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,11 @@ import (
 
 //go:embed web/index.html
 var webFS embed.FS
+
+var (
+	reSpawnWid  = regexp.MustCompile(`workspace\s+(\S+)`)
+	reSpawnPane = regexp.MustCompile(`pane=(\S+)`)
+)
 
 const (
 	cookieName    = "herd_remote"
@@ -216,7 +222,17 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"result": out})
+	// herd-spawn prints: spawned workspace <wid> "<label>"  dir=<dir>  pane=<pane>
+	wid, pane := "", ""
+	if m := reSpawnWid.FindStringSubmatch(out); m != nil {
+		wid = m[1]
+	}
+	if m := reSpawnPane.FindStringSubmatch(out); m != nil {
+		pane = m[1]
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"result": out, "workspace_id": wid, "pane_id": pane, "agent": body.Agent, "dir": body.Dir,
+	})
 }
 
 // /api/sessions/{pane-or-wid}/{action}
