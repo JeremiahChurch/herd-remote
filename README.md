@@ -19,8 +19,10 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   - `Enter` (approve default), `Esc` (deny/cancel), `C-c` (kick a hang)
   - `▲ ▼` to navigate a Codex approval menu, `y` / `n` / `1` `2` `3` for direct answers
   - `/clear`, free-text prompt box, rename, and close (kill).
-- **Spawn** - pick a folder under `$HOME` (filterable), optional first prompt + model,
-  fires `herd-spawn`.
+- **Spawn** - optional session name, pick a folder under `$HOME` (filterable), optional
+  first prompt + model, fires `herd-spawn`. A name labels the herdr window + this list
+  (and the pane border). Claude defaults to Opus 4.8; Codex defaults to `gpt-5.6-sol`.
+  After spawning it jumps straight into the new session and clears the form.
 
 All control keys are validated against an allowlist server-side, so the HTTP surface
 can only send known-safe tokens to a pane.
@@ -85,7 +87,7 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 | POST | `/api/sessions/{wid}/rename` | `{label}` nav label |
 | POST | `/api/sessions/{wid}/close` | kill workspace |
 | GET | `/api/folders` | spawn target folders |
-| POST | `/api/spawn` | `{dir,prompt,model,background}` |
+| POST | `/api/spawn` | `{dir,name,prompt,model,agent,background}` |
 
 ## Requirements
 

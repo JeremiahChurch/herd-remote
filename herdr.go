@@ -231,14 +231,23 @@ func CloseWorkspace(workspaceID string) error {
 	return err
 }
 
+// codexDefaultModel is what a blank Model field means for a Codex spawn: match
+// the user's ~/.codex/config.toml default so phone spawns get the same shape as
+// a terminal `codexd`. Claude is left blank on purpose (its own default is Opus).
+const codexDefaultModel = "gpt-5.6-sol"
+
 // Spawn creates a new workspace in dir and launches the chosen agent, optionally
-// seeded. agent is "claude" (default) or "codex".
-func Spawn(dir, prompt, model, agent string, background bool) (string, error) {
+// seeded. agent is "claude" (default) or "codex". name, when set, becomes the
+// workspace label (herdr nav + this app's list) via herd-spawn's -l.
+func Spawn(dir, prompt, model, agent, name string, background bool) (string, error) {
 	if agent == "" {
 		agent = "claude"
 	}
 	if agent != "claude" && agent != "codex" {
 		return "", fmt.Errorf("unknown agent: %q", agent)
+	}
+	if model == "" && agent == "codex" {
+		model = codexDefaultModel
 	}
 	args := []string{"-a", agent}
 	if background {
@@ -246,6 +255,9 @@ func Spawn(dir, prompt, model, agent string, background bool) (string, error) {
 	}
 	if model != "" {
 		args = append(args, "-m", model)
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		args = append(args, "-l", name)
 	}
 	// `--` stops flag parsing so a dir like "--list" is treated as a path, not an option.
 	args = append(args, "--", dir)

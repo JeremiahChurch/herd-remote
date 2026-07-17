@@ -9,7 +9,8 @@
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3140;
     --fg:#e6edf3; --muted:#8b949e;
-    --idle:#3fb950; --working:#58a6ff; --blocked:#f85149; --done:#6e7681; --unknown:#d29922;
+    /* status palette mirrors herdr: green idle, orange working, red blocked */
+    --idle:#3fb950; --working:#f0883e; --blocked:#f85149; --done:#6e7681; --unknown:#d29922;
     --accent:#58a6ff;
   }
   *{box-sizing:border-box}
@@ -46,13 +47,25 @@
   .meta .s{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
   .badge{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
     border:1px solid var(--line);border-radius:6px;padding:2px 6px}
+  /* status-tinted badges (list + detail) so state reads at a glance, herdr-style */
+  .badge.st-idle{color:var(--idle);border-color:var(--idle)}
+  .badge.st-working{color:var(--working);border-color:var(--working)}
+  .badge.st-blocked{color:var(--blocked);border-color:var(--blocked)}
+  .badge.st-done{color:var(--done);border-color:var(--done)}
+  .badge.st-unknown{color:var(--unknown);border-color:var(--unknown)}
   .agentTag{font-size:10px;color:var(--muted)}
+  .pid{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);font-weight:400}
 
   /* detail: scrollback fills, controls pinned to the bottom */
   #dScroll{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;
     background:#010409;margin:10px 10px 0;border:1px solid var(--line);border-radius:12px}
   #scroll{padding:12px;margin:0;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
     white-space:pre-wrap;word-break:break-word;min-height:100%}
+  /* Copy on a phone: keep "Select All" scoped to the terminal scrollback only, so
+     it grabs the screen text - not the header, status badges, or control buttons. */
+  header,.metabar,.controls,.card .badge,.agentTag,.pid{-webkit-user-select:none;user-select:none}
+  #scroll{-webkit-user-select:text;user-select:text;cursor:text}
+  .controls textarea{-webkit-user-select:text;user-select:text}
   .controls{flex:none;padding:8px 10px calc(env(safe-area-inset-bottom) + 8px);
     background:var(--panel);border-top:1px solid var(--line)}
   .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px}
@@ -105,6 +118,7 @@
   </header>
   <div class="metabar">
     <span class="badge" id="dAgent"></span>
+    <span class="pid" id="dPane"></span>
     <span class="badge" id="dStatus"></span>
     <span class="sp"></span>
     <label style="color:var(--muted);font-size:12px"><input type="checkbox" id="auto" checked> auto</label>
@@ -144,6 +158,9 @@
     <h1>Spawn</h1>
   </header>
   <div class="scrollwrap"><div class="wrap">
+    <label class="fld">Session name (optional; labels the herdr window + this list)</label>
+    <input id="spawnName" class="list-input" placeholder="e.g. failing-simplemdm-test"
+      autocapitalize="off" autocomplete="off" spellcheck="false">
     <label class="fld">Folder — pick below, or type any path (even hidden, e.g. ~/.ssh)</label>
     <input id="folderFilter" class="list-input" placeholder="type a path or filter…"
       oninput="renderFolders()" autocapitalize="off" autocomplete="off" spellcheck="false">
@@ -151,7 +168,7 @@
       onchange="$('folderFilter').value=this.options[this.selectedIndex].textContent"></select>
     <label class="fld">First prompt (optional)</label>
     <textarea id="spawnPrompt" class="list-input" rows="3" placeholder="what should it do?"></textarea>
-    <label class="fld">Model (optional; blank = agent default, e.g. Opus 4.8 for Claude)</label>
+    <label class="fld">Model (optional; blank = Opus 4.8 for Claude, gpt-5.6-sol for Codex)</label>
     <input id="spawnModel" class="list-input" placeholder="">
     <div class="spawnRow">
       <button class="btn-accent" onclick="doSpawn('claude')">Spawn Claude</button>
@@ -234,11 +251,12 @@ function renderCards(sessions){
   for(const s of sessions){
     const d=document.createElement('div');d.className='card';d.onclick=()=>openDetail(s);
     const st=STATUSES.includes(s.status)?s.status:'unknown';
+    const pid=s.pane_id?`<span class="pid">${escHtml(s.pane_id)}</span>`:'';
     d.innerHTML=`<span class="dot ${st}"></span>
-      <div class="meta"><div class="t">${escHtml(s.label||s.name||'—')}</div>
+      <div class="meta"><div class="t">${escHtml(s.label||s.name||'—')} ${pid}</div>
       <div class="s">${escHtml(shortCwd(s.cwd))}</div></div>
       <div style="text-align:right"><div class="agentTag">${escHtml(s.agent||'')}</div>
-      <div class="badge">${escHtml(s.status||'?')}</div></div>`;
+      <div class="badge st-${st}">${escHtml(s.status||'?')}</div></div>`;
     c.appendChild(d);
   }
 }
@@ -259,7 +277,9 @@ window.addEventListener('popstate',e=>applyState(e.state));
 function openDetail(s){navTo({view:'detail',s});}
 function renderDetail(s){cur=s;show('detailView');
   $('dTitle').textContent=s.label||s.name||'session';
-  $('dAgent').textContent=s.agent||'';$('dStatus').textContent=s.status||'';
+  $('dAgent').textContent=s.agent||'';$('dPane').textContent=s.pane_id||'';
+  const dst=STATUSES.includes(s.status)?s.status:'unknown';
+  $('dStatus').textContent=s.status||'';$('dStatus').className='badge st-'+dst;
   $('scroll').textContent='loading…';readScroll();startPoll();}
 function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked)readScroll();},2500);}
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
@@ -309,13 +329,18 @@ async function doSpawn(agent){
   if(dir&&!looksPath&&$('folder').value)dir=$('folder').value;
   if(!dir)dir=$('folder').value;
   if(!dir){toast('pick or type a folder');return;}
+  const name=$('spawnName').value.trim();
   $('spawnMsg').textContent=`spawning ${agent}…`;
   try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
-    dir,agent,prompt:$('spawnPrompt').value,model:$('spawnModel').value.trim(),background:true})});
+    dir,agent,name,prompt:$('spawnPrompt').value,model:$('spawnModel').value.trim(),background:true})});
     $('spawnMsg').textContent=j.result||'spawned';
+    // start fresh: clear name, path filter, prompt, and model for the next spawn
+    $('spawnName').value='';$('folderFilter').value='';$('spawnPrompt').value='';$('spawnModel').value='';
+    renderFolders();
     if(j.pane_id){ // jump straight into the new session instead of back to the list
+      const label=name||(dir.replace(/\/+$/,'').split('/').pop()||dir);
       const s={workspace_id:j.workspace_id,pane_id:j.pane_id,agent,
-        label:(dir.replace(/\/+$/,'').split('/').pop()||dir),name:'',status:'working',cwd:dir};
+        label,name:'',status:'working',cwd:dir};
       history.replaceState({view:'detail',s},'');renderDetail(s);
     }else{setTimeout(backToList,800);}
   }catch(e){$('spawnMsg').textContent=e.message;}

@@ -28,7 +28,10 @@ var webFS embed.FS
 var (
 	// Anchored to herd-spawn's exact line: spawned workspace <wid> "<label>"  dir=<dir>  pane=<pane>
 	reSpawnWid  = regexp.MustCompile(`(?m)^spawned workspace (\S+) `)
-	reSpawnPane = regexp.MustCompile(`(?m) pane=(\S+)\s*$`)
+	// NB: not anchored to end-of-line - herd-spawn appends `  seed="..."` after
+	// pane=<pane> whenever a first prompt is given, so `$` here would never match
+	// in the common (seeded) case and the UI would lose the pane id.
+	reSpawnPane = regexp.MustCompile(` pane=(\S+)`)
 	// herdr pane/workspace ids look like w7C or wAJ:p1 - letters, digits, ':' only.
 	reHerdrID = regexp.MustCompile(`^[A-Za-z0-9:_-]+$`)
 )
@@ -231,6 +234,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Prompt     string `json:"prompt"`
 		Model      string `json:"model"`
 		Agent      string `json:"agent"`
+		Name       string `json:"name"`
 		Background bool   `json:"background"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -241,7 +245,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "dir required")
 		return
 	}
-	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Agent, body.Background)
+	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Agent, strings.TrimSpace(body.Name), body.Background)
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
@@ -254,8 +258,16 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if m := reSpawnPane.FindStringSubmatch(out); m != nil {
 		pane = m[1]
 	}
+	// herd-spawn's -l already labeled the workspace (herdr nav + this app's list).
+	// Also stamp the pane/agent border so the name shows everywhere in herdr.
+	if name := strings.TrimSpace(body.Name); name != "" && pane != "" {
+		_, _ = run(herdrBin, "pane", "rename", pane, name)
+		_, _ = run(herdrBin, "agent", "rename", pane, name)
+	}
+	label := strings.TrimSpace(body.Name)
 	writeJSON(w, http.StatusOK, map[string]string{
-		"result": out, "workspace_id": wid, "pane_id": pane, "agent": body.Agent, "dir": body.Dir,
+		"result": out, "workspace_id": wid, "pane_id": pane,
+		"agent": body.Agent, "dir": body.Dir, "label": label,
 	})
 }
 
