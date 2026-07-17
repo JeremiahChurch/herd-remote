@@ -28,13 +28,33 @@ var webFS embed.FS
 var (
 	// Anchored to herd-spawn's exact line: spawned workspace <wid> "<label>"  dir=<dir>  pane=<pane>
 	reSpawnWid  = regexp.MustCompile(`(?m)^spawned workspace (\S+) `)
-	// NB: not anchored to end-of-line - herd-spawn appends `  seed="..."` after
-	// pane=<pane> whenever a first prompt is given, so `$` here would never match
-	// in the common (seeded) case and the UI would lose the pane id.
-	reSpawnPane = regexp.MustCompile(` pane=(\S+)`)
+	// pane=<pane> is followed by either end-of-line or `  seed="..."` (present only
+	// when a first prompt was given). Anchoring on that trailer - instead of a bare
+	// ` pane=(\S+)` - keeps a crafted label like `x pane=wZZ:p1` (mid-line, always
+	// trailed by `"  dir=`) from hijacking the parse, and tolerates dirs with spaces.
+	reSpawnPane = regexp.MustCompile(`(?m) pane=(\S+?)(?:  seed=|\s*$)`)
 	// herdr pane/workspace ids look like w7C or wAJ:p1 - letters, digits, ':' only.
 	reHerdrID = regexp.MustCompile(`^[A-Za-z0-9:_-]+$`)
+	// reSafeLabel constrains user-supplied session names/labels: no leading '-'
+	// (herdr rename / herd-spawn -l would read it as a flag) and no '=' (a crafted
+	// name could otherwise forge a `pane=`/`seed=` token in herd-spawn's output).
+	// Realistic labels - folder names, ticket-ish slugs - all fit.
+	reSafeLabel = regexp.MustCompile(`^[A-Za-z0-9 ._:/][A-Za-z0-9 ._:/-]*$`)
 )
+
+// validateLabel guards any name we hand to herdr rename / herd-spawn -l.
+func validateLabel(s string) error {
+	if s == "" {
+		return fmt.Errorf("empty label")
+	}
+	if len(s) > 100 {
+		return fmt.Errorf("label too long (max 100)")
+	}
+	if !reSafeLabel.MatchString(s) {
+		return fmt.Errorf("label may use letters, digits, space, and . _ : / - (no leading -)")
+	}
+	return nil
+}
 
 // methodGuard rejects the request unless it uses the expected HTTP method.
 func methodGuard(w http.ResponseWriter, r *http.Request, method string) bool {
@@ -245,7 +265,14 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "dir required")
 		return
 	}
-	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Agent, strings.TrimSpace(body.Name), body.Background)
+	name := strings.TrimSpace(body.Name)
+	if name != "" {
+		if err := validateLabel(name); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Agent, name, body.Background)
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
@@ -260,11 +287,11 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	// herd-spawn's -l already labeled the workspace (herdr nav + this app's list).
 	// Also stamp the pane/agent border so the name shows everywhere in herdr.
-	if name := strings.TrimSpace(body.Name); name != "" && pane != "" {
+	if name != "" && pane != "" {
 		_, _ = run(herdrBin, "pane", "rename", pane, name)
 		_, _ = run(herdrBin, "agent", "rename", pane, name)
 	}
-	label := strings.TrimSpace(body.Name)
+	label := name
 	writeJSON(w, http.StatusOK, map[string]string{
 		"result": out, "workspace_id": wid, "pane_id": pane,
 		"agent": body.Agent, "dir": body.Dir, "label": label,
@@ -428,5 +455,3 @@ func logRequests(next http.Handler) http.Handler {
 		}
 	})
 }
-
-var _ = fmt.Sprint // keep fmt import if trimmed later

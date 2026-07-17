@@ -210,8 +210,8 @@ func SendKey(pane, key string) error {
 // consistent instead of leaving the stale folder name on the pane border.
 func Rename(workspaceID, paneID, label string) error {
 	label = strings.TrimSpace(label)
-	if label == "" {
-		return fmt.Errorf("empty label")
+	if err := validateLabel(label); err != nil {
+		return err
 	}
 	// Workspace label is the authoritative nav name; fail if it errors.
 	if _, err := run(herdrBin, "workspace", "rename", workspaceID, label); err != nil {
