@@ -27,7 +27,7 @@ var webFS embed.FS
 
 var (
 	// Anchored to herd-spawn's exact line: spawned workspace <wid> "<label>"  dir=<dir>  pane=<pane>
-	reSpawnWid  = regexp.MustCompile(`(?m)^spawned workspace (\S+) `)
+	reSpawnWid = regexp.MustCompile(`(?m)^spawned workspace (\S+) `)
 	// pane=<pane> is followed by either end-of-line or `  seed="..."` (present only
 	// when a first prompt was given). Anchoring on that trailer - instead of a bare
 	// ` pane=(\S+)` - keeps a crafted label like `x pane=wZZ:p1` (mid-line, always
@@ -41,6 +41,23 @@ var (
 	// Realistic labels - folder names, ticket-ish slugs - all fit.
 	reSafeLabel = regexp.MustCompile(`^[A-Za-z0-9 ._:/][A-Za-z0-9 ._:/-]*$`)
 )
+
+// reLabelStrip matches any run of chars NOT allowed in a herdr label; sanitizeLabel
+// replaces each run with a single space so an agent title becomes a safe label.
+var reLabelStrip = regexp.MustCompile(`[^A-Za-z0-9 ._:/-]+`)
+
+// sanitizeLabel coerces an arbitrary agent title into a reSafeLabel-valid string:
+// disallowed chars -> space, collapse whitespace, drop a leading '-', cap at 100.
+// May return "" (e.g. an all-punctuation title), which the caller treats as "no label".
+func sanitizeLabel(s string) string {
+	s = reLabelStrip.ReplaceAllString(s, " ")
+	s = strings.Join(strings.Fields(s), " ") // collapse whitespace runs + trim
+	s = strings.TrimSpace(strings.TrimLeft(s, "-"))
+	if len(s) > 100 {
+		s = strings.TrimSpace(s[:100])
+	}
+	return s
+}
 
 // validateLabel guards any name we hand to herdr rename / herd-spawn -l.
 func validateLabel(s string) error {
@@ -245,6 +262,38 @@ func handleFolders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"folders": rel})
 }
 
+func handleHistory(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
+	filter := r.URL.Query().Get("dir")
+	limit := 60
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	entries := HistorySessions(filter, limit)
+	home, _ := os.UserHomeDir()
+	type outEntry struct {
+		Agent    string `json:"agent"`
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Cwd      string `json:"cwd"`
+		Short    string `json:"short"` // ~-relative cwd for a compact phone list
+		Modified int64  `json:"modified"`
+	}
+	list := make([]outEntry, 0, len(entries))
+	for _, e := range entries {
+		short := e.Cwd
+		if home != "" && strings.HasPrefix(e.Cwd, home) {
+			short = "~" + strings.TrimPrefix(e.Cwd, home)
+		}
+		list = append(list, outEntry{e.Agent, e.ID, e.Name, e.Cwd, short, e.Modified})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"history": list})
+}
+
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if !methodGuard(w, r, http.MethodPost) {
 		return
@@ -253,8 +302,10 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Dir        string `json:"dir"`
 		Prompt     string `json:"prompt"`
 		Model      string `json:"model"`
+		Effort     string `json:"effort"`
 		Agent      string `json:"agent"`
 		Name       string `json:"name"`
+		Resume     string `json:"resume"`
 		Background bool   `json:"background"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -266,13 +317,19 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
+	// A resume label comes from the agent's own title (ai-title / thread_name), which
+	// carries punctuation the label rule rejects - sanitize it into a safe label rather
+	// than 400 the whole resume. A typed name is still validated strictly.
+	if body.Resume != "" {
+		name = sanitizeLabel(name)
+	}
 	if name != "" {
 		if err := validateLabel(name); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Agent, name, body.Background)
+	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Effort, body.Agent, name, body.Resume, body.Background)
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
@@ -432,6 +489,7 @@ func main() {
 	mux.HandleFunc("/api/sessions", requireAuth(handleSessions))
 	mux.HandleFunc("/api/sessions/", requireAuth(handleSessionAction))
 	mux.HandleFunc("/api/folders", requireAuth(handleFolders))
+	mux.HandleFunc("/api/history", requireAuth(handleHistory))
 	mux.HandleFunc("/api/spawn", requireAuth(handleSpawn))
 
 	srv := &http.Server{

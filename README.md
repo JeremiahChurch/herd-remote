@@ -19,10 +19,19 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   - `Enter` (approve default), `Esc` (deny/cancel), `C-c` (kick a hang)
   - `▲ ▼` to navigate a Codex approval menu, `y` / `n` / `1` `2` `3` for direct answers
   - `/clear`, free-text prompt box, rename, and close (kill).
+  - a **command / key picker** (dropdown) for less-common inputs (`/compact`, `/context`,
+    `/usage`, `Space`, `Tab`, `Backspace`) so the button grid stays small.
+  - scrollback reads `--source recent`, so you can scroll well past the visible screen.
 - **Spawn** - optional session name, pick a folder under `$HOME` (filterable), optional
-  first prompt + model, fires `herd-spawn`. A name labels the herdr window + this list
-  (and the pane border). Claude defaults to Opus 4.8; Codex defaults to `gpt-5.6-sol`.
-  After spawning it jumps straight into the new session and clears the form.
+  first prompt, and a **model dropdown that also picks the agent** (Claude: Opus/Sonnet/
+  Fable; Codex: Sol/Terra x high/medium reasoning effort). One **Launch** button, tinted
+  to the chosen agent. The spawn name is passed to Claude's own `--name` so it shows
+  inside Claude too, not just in herdr. After spawning it jumps straight into the new
+  session and clears the form.
+- **Resume** - lists past sessions read straight from disk (Claude
+  `~/.claude/projects/*/<uuid>.jsonl`, titled by the `ai-title` record; Codex
+  `~/.codex/session_index.jsonl`), most-recent first, filterable by folder/name. Tap one
+  to relaunch it (`claude --resume <id>` / `codex resume <id>`) in a fresh herdr workspace.
 
 All control keys are validated against an allowlist server-side, so the HTTP surface
 can only send known-safe tokens to a pane.
@@ -87,7 +96,8 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 | POST | `/api/sessions/{wid}/rename` | `{label}` nav label |
 | POST | `/api/sessions/{wid}/close` | kill workspace |
 | GET | `/api/folders` | spawn target folders |
-| POST | `/api/spawn` | `{dir,name,prompt,model,agent,background}` |
+| GET | `/api/history?dir=&limit=` | past sessions (both agents) for resume |
+| POST | `/api/spawn` | `{dir,name,prompt,model,effort,agent,resume,background}` |
 
 ## Requirements
 

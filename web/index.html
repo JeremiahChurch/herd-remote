@@ -103,6 +103,7 @@
 <div id="listView" class="view hidden">
   <header>
     <h1>Sessions</h1><span class="sp"></span>
+    <button onclick="showResume()">↩ Resume</button>
     <button onclick="showSpawn()">＋ Spawn</button>
     <button onclick="refresh()">↻</button>
   </header>
@@ -150,6 +151,19 @@
       <button onclick="key('5')">5</button>
       <button onclick="closeSession()" class="danger">✕ kill</button>
     </div>
+    <select id="cmdSel" class="list-input" style="margin:0 0 8px" onchange="runCmd(this)">
+      <option value="">⌘ command / key…</option>
+      <optgroup label="slash">
+        <option data-kind="cmd" value="/compact">/compact</option>
+        <option data-kind="cmd" value="/context">/context</option>
+        <option data-kind="cmd" value="/usage">/usage</option>
+      </optgroup>
+      <optgroup label="keys">
+        <option data-kind="key" value="Space">Space</option>
+        <option data-kind="key" value="Tab">Tab</option>
+        <option data-kind="key" value="Backspace">Backspace</option>
+      </optgroup>
+    </select>
     <div class="promptbar">
       <textarea id="prompt" rows="2" placeholder="type a prompt…"></textarea>
       <button class="btn-accent" onclick="sendPrompt()">Send</button>
@@ -174,14 +188,36 @@
       onchange="$('folderFilter').value=this.options[this.selectedIndex].textContent"></select>
     <label class="fld">First prompt (optional)</label>
     <textarea id="spawnPrompt" class="list-input" rows="3" placeholder="what should it do?"></textarea>
-    <label class="fld">Model (optional; blank = Opus 4.8 for Claude, gpt-5.6-sol for Codex)</label>
-    <input id="spawnModel" class="list-input" placeholder="">
-    <div class="spawnRow">
-      <button class="btn-accent" onclick="doSpawn('claude')">Spawn Claude</button>
-      <button class="btn-codex" onclick="doSpawn('codex')">Spawn Codex</button>
-    </div>
+    <label class="fld">Model (picks the agent too — Claude on top, Codex below)</label>
+    <select id="spawnModel" class="list-input" onchange="updateLaunchBtn()">
+      <optgroup label="Claude">
+        <option data-agent="claude" data-model="opus"   data-effort="">Opus 4.8</option>
+        <option data-agent="claude" data-model="sonnet" data-effort="">Sonnet 5</option>
+        <option data-agent="claude" data-model="fable"  data-effort="">Fable 5</option>
+      </optgroup>
+      <optgroup label="Codex">
+        <option data-agent="codex" data-model="gpt-5.6-sol"   data-effort="high">Codex · Sol · high</option>
+        <option data-agent="codex" data-model="gpt-5.6-sol"   data-effort="medium">Codex · Sol · medium</option>
+        <option data-agent="codex" data-model="gpt-5.6-terra" data-effort="high">Codex · Terra · high</option>
+        <option data-agent="codex" data-model="gpt-5.6-terra" data-effort="medium">Codex · Terra · medium</option>
+      </optgroup>
+    </select>
+    <button class="btn-accent" id="launchBtn" style="width:100%" onclick="doSpawn()">Launch</button>
     <p id="spawnMsg" style="color:var(--muted)"></p>
   </div></div>
+</div>
+
+<!-- RESUME -->
+<div id="resumeView" class="view hidden">
+  <header>
+    <button onclick="backToList()">‹</button>
+    <h1>Resume</h1><span class="sp"></span>
+    <button onclick="renderResume()">↻</button>
+  </header>
+  <div style="padding:10px 12px 0"><input id="histFilter" class="list-input" style="margin:0"
+    placeholder="filter by folder or name…" oninput="filterHistory()"
+    autocapitalize="off" autocomplete="off" spellcheck="false"></div>
+  <div class="scrollwrap"><div class="wrap" id="histCards"></div></div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -190,7 +226,7 @@
 let cur=null, folders=[], pollTimer=null, refreshLoop=null, reading=false;
 const STATUSES=['idle','working','blocked','done','unknown'];
 const $=id=>document.getElementById(id);
-function show(view){for(const v of ['login','listView','detailView','spawnView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
+function show(view){for(const v of ['login','listView','detailView','spawnView','resumeView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1600);}
 function escHtml(s){return(s==null?'':String(s)).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
 
@@ -275,6 +311,7 @@ function applyState(st){
   st=st||{view:'list'};
   if(st.view==='detail'&&st.s){renderDetail(st.s);return;}
   if(st.view==='spawn'){renderSpawn();return;}
+  if(st.view==='resume'){renderResume();return;}
   stopPoll();show('listView');refresh();
 }
 window.addEventListener('popstate',e=>applyState(e.state));
@@ -293,7 +330,7 @@ async function readScroll(){
   if(!cur||reading)return;
   const pane=cur.pane_id;reading=true;
   try{
-    const j=await api(`/api/sessions/${encodeURIComponent(pane)}/read?lines=60`);
+    const j=await api(`/api/sessions/${encodeURIComponent(pane)}/read?lines=200`);
     if(!cur||cur.pane_id!==pane)return; // navigated away mid-request
     const box=$('dScroll'),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
     $('scroll').innerHTML=ansiToHtml(j.text||'');
@@ -309,6 +346,17 @@ async function sendPrompt(){if(!cur)return;const t=$('prompt').value;if(!t.trim(
 async function clearSession(){if(!cur)return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:'/clear'})});toast('/clear');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
+// runCmd dispatches the command/key select: 'key' items reuse the allowlisted send-keys
+// path; 'cmd' items are typed as a slash-command prompt (text + Enter). Snaps back to the
+// header label after each run so the picker is a fire-and-reset control, not a mode.
+async function runCmd(sel){
+  const o=sel.options[sel.selectedIndex],kind=o.dataset.kind,val=o.value;
+  sel.selectedIndex=0;
+  if(!val||!cur)return;
+  if(kind==='key')return key(val);
+  try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:val})});
+    toast(val);setTimeout(readScroll,400);}
+  catch(e){toast(e.message);}}
 async function renameCur(){if(!cur)return;const name=window.prompt('Rename session',cur.label||'');if(!name)return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.workspace_id)}/rename`,{method:'POST',body:JSON.stringify({label:name,pane:cur.pane_id})});
     cur.label=name;$('dTitle').textContent=name;toast('renamed');}catch(e){toast(e.message);}}
@@ -318,7 +366,7 @@ async function closeSession(){if(!cur)return;if(!confirm('Kill this session?'))r
 
 // ---------- spawn ----------
 function showSpawn(){navTo({view:'spawn'});}
-async function renderSpawn(){stopPoll();show('spawnView');$('spawnMsg').textContent='';
+async function renderSpawn(){stopPoll();show('spawnView');$('spawnMsg').textContent='';updateLaunchBtn();
   try{const j=await api('/api/folders');folders=j.folders||[];renderFolders();}catch(e){toast(e.message);}}
 function renderFolders(){
   const f=$('folderFilter').value.toLowerCase(),sel=$('folder');sel.innerHTML='';
@@ -326,7 +374,14 @@ function renderFolders(){
     const o=document.createElement('option');o.value=d.path;o.textContent=d.short;sel.appendChild(o);}
   if(sel.options.length)sel.selectedIndex=0;
 }
-async function doSpawn(agent){
+// selModel returns the currently selected model <option> (carries agent+model+effort).
+function selModel(){const s=$('spawnModel');return s.options[s.selectedIndex];}
+// updateLaunchBtn reflects the picked model on the single Launch button: its label
+// and its tint (accent for Claude, purple for Codex) so the agent still reads at a glance.
+function updateLaunchBtn(){const o=selModel();if(!o)return;const b=$('launchBtn');
+  b.textContent='Launch '+o.textContent;
+  b.className=(o.dataset.agent==='codex'?'btn-codex':'btn-accent');}
+async function doSpawn(){
   // If the input looks like a path (starts with / ~ or ./), use it verbatim - even a
   // hidden dir like ~/.ssh. Otherwise treat the text as a filter word and use the
   // highlighted list option. Invalid paths just come back as a herd-spawn error.
@@ -335,13 +390,15 @@ async function doSpawn(agent){
   if(dir&&!looksPath&&$('folder').value)dir=$('folder').value;
   if(!dir)dir=$('folder').value;
   if(!dir){toast('pick or type a folder');return;}
+  const o=selModel();
+  const agent=o.dataset.agent, model=o.dataset.model||'', effort=o.dataset.effort||'';
   const name=$('spawnName').value.trim();
   $('spawnMsg').textContent=`spawning ${agent}…`;
   try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
-    dir,agent,name,prompt:$('spawnPrompt').value,model:$('spawnModel').value.trim(),background:true})});
+    dir,agent,name,prompt:$('spawnPrompt').value,model,effort,background:true})});
     $('spawnMsg').textContent=j.result||'spawned';
-    // start fresh: clear name, path filter, prompt, and model for the next spawn
-    $('spawnName').value='';$('folderFilter').value='';$('spawnPrompt').value='';$('spawnModel').value='';
+    // start fresh: clear name, path filter, prompt (keep the model choice for repeats)
+    $('spawnName').value='';$('folderFilter').value='';$('spawnPrompt').value='';
     renderFolders();
     if(j.pane_id){ // jump straight into the new session instead of back to the list
       const label=name||(dir.replace(/\/+$/,'').split('/').pop()||dir);
@@ -351,6 +408,44 @@ async function doSpawn(agent){
     }else{setTimeout(backToList,800);}
   }catch(e){$('spawnMsg').textContent=e.message;}
 }
+
+// ---------- resume (past sessions from disk) ----------
+let histList=[];
+function showResume(){navTo({view:'resume'});}
+async function renderResume(){stopPoll();show('resumeView');
+  $('histCards').innerHTML='<div class="empty">loading…</div>';
+  try{const j=await api('/api/history?limit=200');histList=j.history||[];filterHistory();}
+  catch(e){$('histCards').innerHTML='<div class="empty">'+escHtml(e.message)+'</div>';}}
+function ago(sec){if(!sec)return'';let s=Math.floor(Date.now()/1000)-sec;if(s<0)s=0;
+  if(s<60)return'just now';const m=Math.floor(s/60);if(m<60)return m+'m ago';
+  const h=Math.floor(m/60);if(h<24)return h+'h ago';const d=Math.floor(h/24);
+  if(d<30)return d+'d ago';return Math.floor(d/30)+'mo ago';}
+function filterHistory(){
+  const q=($('histFilter').value||'').toLowerCase(),c=$('histCards');c.innerHTML='';
+  const items=histList.filter(e=>!q||((e.name||'')+' '+(e.short||'')+' '+e.agent).toLowerCase().includes(q));
+  if(!items.length){c.innerHTML='<div class="empty">no matching sessions</div>';return;}
+  for(const e of items){
+    const d=document.createElement('div');d.className='card';d.onclick=()=>resumeSession(e);
+    const tag=`<span class="agentTag"${e.agent==='codex'?' style="color:#bc8cff"':''}>${escHtml(e.agent)}</span>`;
+    const where=[e.short,ago(e.modified)].filter(Boolean).join(' · ');
+    d.innerHTML=`<div class="meta"><div class="t">${escHtml(e.name||'(untitled)')}</div>
+      <div class="s">${escHtml(where)}</div></div>
+      <div style="text-align:right">${tag}</div>`;
+    c.appendChild(d);
+  }
+}
+async function resumeSession(e){
+  if(!confirm(`Resume ${e.agent}: ${e.name||e.id}?`))return;
+  const dir=e.cwd||'~'; // codex index has no cwd; '~' lets herd-spawn resolve HOME
+  try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
+    dir,agent:e.agent,name:e.name||'',resume:e.id,background:true})});
+    toast('resuming…');
+    if(j.pane_id){ // jump into the resumed session
+      const s={workspace_id:j.workspace_id,pane_id:j.pane_id,agent:e.agent,
+        label:e.name||e.id,name:'',status:'working',cwd:dir};
+      history.replaceState({view:'detail',s},'');renderDetail(s);
+    }else{setTimeout(backToList,800);}
+  }catch(err){toast(err.message);}}
 
 // ---------- boot ----------
 async function boot(){
