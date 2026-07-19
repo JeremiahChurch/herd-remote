@@ -22,6 +22,11 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   - a **command / key picker** (dropdown) for less-common inputs (`/compact`, `/context`,
     `/usage`, `Space`, `Tab`, `Backspace`) so the button grid stays small.
   - scrollback reads `--source recent`, so you can scroll well past the visible screen.
+  - a **⧉ Copy** toggle freezes the scrollback into a plain read-only textarea (native,
+    well-behaved mobile text selection) and **pauses polling** so nothing shifts under your
+    finger while you select. Tap **✓ Done** to return to the live colored view.
+  - the agent's full-width input-box rules (`───`/`━━━`) are collapsed to a short divider
+    so the prompt line stays near the bottom instead of wrapping off-screen on a phone.
 - **Spawn** - optional session name, pick a folder under `$HOME` (filterable), optional
   first prompt, and a **model dropdown that also picks the agent** (Claude: Opus/Sonnet/
   Fable; Codex: Sol/Terra x high/medium reasoning effort). One **Launch** button, tinted
@@ -30,8 +35,9 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   session and clears the form.
 - **Resume** - lists past sessions read straight from disk (Claude
   `~/.claude/projects/*/<uuid>.jsonl`, titled by the `ai-title` record; Codex
-  `~/.codex/session_index.jsonl`), most-recent first, filterable by folder/name. Tap one
-  to relaunch it (`claude --resume <id>` / `codex resume <id>`) in a fresh herdr workspace.
+  `~/.codex/session_index.jsonl`), most-recent first, filterable by folder/name and by a
+  **Claude / Codex** segmented toggle. Tap one to relaunch it (`claude --resume <id>` /
+  `codex resume <id>`) in a fresh herdr workspace.
 
 All control keys are validated against an allowlist server-side, so the HTTP surface
 can only send known-safe tokens to a pane.
@@ -104,3 +110,24 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 - `herdr` and `herd-spawn` on `PATH` (this repo assumes `~/.local/bin`).
 - Go 1.18+ to build.
 - WSL2 with the WSLExpose hop installed (`expose-port install`) for LAN access.
+
+### Agent launchers (how sessions actually start)
+
+Spawns/resumes run through `herd-spawn`, which launches your agent CLIs. By default it uses
+the raw CLIs with full-auto permissions, so **no personal aliases are required**:
+
+| Agent | Env override | Default |
+|---|---|---|
+| Claude | `HERD_CLAUDE_CMD` | `claude --dangerously-skip-permissions` |
+| Codex | `HERD_CODEX_CMD` | `codex --yolo` |
+
+Point these at your own wrapper if you have one - e.g. Jeremiah's boxes use `ccd` / `codexd`
+aliases for the same commands:
+
+```bash
+export HERD_CLAUDE_CMD='ccd'      # your bypass-perms Claude wrapper
+export HERD_CODEX_CMD='codexd'    # your full-auto Codex wrapper
+```
+
+These grant the agent full permissions in the spawned session by design - only spawn into
+folders you trust, same as running the CLI yourself.

@@ -29,6 +29,10 @@
   button:active{transform:translateY(1px)}
   .btn-accent{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
   .btn-codex{background:#8957e5;color:#fff;border-color:transparent;font-weight:600}
+  .seg{display:flex;gap:6px;padding:8px 12px 0}
+  .seg button{flex:1;padding:7px 0;font-size:13px}
+  .seg button.on{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
+  .seg button.on.codex{background:#8957e5;color:#fff}
   /* each top-level view is a full-height flex column */
   .view{position:absolute;inset:0;display:flex;flex-direction:column}
   .view.hidden{display:none}
@@ -65,7 +69,15 @@
      it grabs the screen text - not the header, status badges, or control buttons. */
   header,.metabar,.controls,.card .badge,.agentTag,.pid{-webkit-user-select:none;user-select:none}
   #scroll{-webkit-user-select:text;user-select:text;cursor:text}
+  /* copy mode: a plain readonly textarea with native, well-behaved mobile selection.
+     Polling is paused while it's showing, so nothing shifts under your finger. */
+  #scrollText{width:100%;height:100%;box-sizing:border-box;border:0;resize:none;outline:none;
+    padding:12px;margin:0;background:#010409;color:var(--fg);
+    font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+    white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text}
   .controls textarea{-webkit-user-select:text;user-select:text}
+  #copyBtn{padding:5px 9px;font-size:12px;border-radius:8px}
+  #copyBtn.on{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
   .controls{flex:none;padding:8px 10px calc(env(safe-area-inset-bottom) + 8px);
     background:var(--panel);border-top:1px solid var(--line)}
   .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px}
@@ -122,9 +134,10 @@
     <span class="pid" id="dPane"></span>
     <span class="badge" id="dStatus"></span>
     <span class="sp"></span>
+    <button id="copyBtn" onclick="toggleCopy()">⧉ Copy</button>
     <label style="color:var(--muted);font-size:12px"><input type="checkbox" id="auto" checked> auto</label>
   </div>
-  <div id="dScroll"><pre id="scroll">loading…</pre></div>
+  <div id="dScroll"><pre id="scroll">loading…</pre><textarea id="scrollText" class="hidden" readonly></textarea></div>
 
   <div class="controls">
     <div class="grid4">
@@ -214,6 +227,11 @@
     <h1>Resume</h1><span class="sp"></span>
     <button onclick="renderResume()">↻</button>
   </header>
+  <div class="seg">
+    <button id="haAll" class="on" onclick="setHistAgent('all')">All</button>
+    <button id="haClaude" onclick="setHistAgent('claude')">Claude</button>
+    <button id="haCodex" onclick="setHistAgent('codex')">Codex</button>
+  </div>
   <div style="padding:10px 12px 0"><input id="histFilter" class="list-input" style="margin:0"
     placeholder="filter by folder or name…" oninput="filterHistory()"
     autocapitalize="off" autocomplete="off" spellcheck="false"></div>
@@ -223,7 +241,7 @@
 <div id="toast" class="toast"></div>
 
 <script>
-let cur=null, folders=[], pollTimer=null, refreshLoop=null, reading=false;
+let cur=null, folders=[], pollTimer=null, refreshLoop=null, reading=false, copyMode=false, lastText='';
 const STATUSES=['idle','working','blocked','done','unknown'];
 const $=id=>document.getElementById(id);
 function show(view){for(const v of ['login','listView','detailView','spawnView','resumeView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
@@ -286,7 +304,7 @@ async function doLogin(){
 $('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 
 // ---------- list ----------
-async function refresh(){try{const j=await api('/api/sessions');renderCards(j.sessions||[]);}catch(e){if(e.message!=='unauth')toast(e.message);}}
+async function refresh(){try{const j=await api('/api/sessions');renderCards(j.sessions||[]);}catch(e){if(e.message!=='unauth'&&!/failed to fetch/i.test(e.message))toast(e.message);}}
 function renderCards(sessions){
   const c=$('cards');c.innerHTML='';
   if(!sessions.length){c.innerHTML='<div class="empty">no sessions</div>';return;}
@@ -323,17 +341,43 @@ function renderDetail(s){cur=s;show('detailView');
   $('dAgent').textContent=s.agent||'';$('dPane').textContent=s.pane_id||'';
   const dst=STATUSES.includes(s.status)?s.status:'unknown';
   $('dStatus').textContent=s.status||'';$('dStatus').className='badge st-'+dst;
+  if(copyMode)toggleCopy(); // reset to the live colored view on entry
   $('scroll').textContent='loading…';readScroll();startPoll();}
-function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked)readScroll();},2500);}
+function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked&&!copyMode)readScroll();},2500);}
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
+function ansiStrip(s){return(s||'')
+  .replace(/\x1B\[[0-9;?]*[ -\/]*[@-~]/g,'')  // CSI (color/cursor) sequences
+  .replace(/\x1B[@-Z\\-_]/g,'')               // other escapes (OSC intros etc.)
+  .replace(/\r\n/g,'\n').replace(/\r/g,'');}
+// The agent input box draws full-width horizontal rules (─── / ━━━ / ═══, 100+ chars).
+// On a phone those wrap into many visual lines, so the prompt scrolls off-screen. Collapse
+// each long rule run to a short divider so the box stays ~2 lines. Display-only; the run
+// stays inside its original ANSI color span, so the divider keeps its color.
+function collapseRules(s){return(s||'')
+  .replace(/[─━┄┅┈┉╌╍═—―]{12,}/g,'─'.repeat(24))
+  .replace(/[-_=]{24,}/g,m=>m[0].repeat(24));}
+// Copy mode: freeze the scrollback into a readonly textarea (native mobile selection),
+// pause polling so nothing moves under your finger. Toggle back to the live colored view.
+function toggleCopy(){
+  copyMode=!copyMode;
+  const pre=$('scroll'),ta=$('scrollText'),btn=$('copyBtn');
+  if(copyMode){
+    ta.value=ansiStrip(lastText);pre.classList.add('hidden');ta.classList.remove('hidden');
+    btn.textContent='✓ Done';btn.classList.add('on');
+  }else{
+    ta.classList.add('hidden');pre.classList.remove('hidden');
+    btn.textContent='⧉ Copy';btn.classList.remove('on');readScroll();
+  }
+}
 async function readScroll(){
-  if(!cur||reading)return;
+  if(!cur||reading||copyMode)return;
   const pane=cur.pane_id;reading=true;
   try{
     const j=await api(`/api/sessions/${encodeURIComponent(pane)}/read?lines=200`);
     if(!cur||cur.pane_id!==pane)return; // navigated away mid-request
+    lastText=j.text||'';
     const box=$('dScroll'),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
-    $('scroll').innerHTML=ansiToHtml(j.text||'');
+    $('scroll').innerHTML=ansiToHtml(collapseRules(lastText));
     if(atBottom)box.scrollTop=box.scrollHeight;
   }catch(e){}finally{reading=false;}
 }
@@ -410,8 +454,12 @@ async function doSpawn(){
 }
 
 // ---------- resume (past sessions from disk) ----------
-let histList=[];
+let histList=[],histAgent='all';
 function showResume(){navTo({view:'resume'});}
+function setHistAgent(a){histAgent=a;
+  for(const [id,val] of [['haAll','all'],['haClaude','claude'],['haCodex','codex']]){
+    const b=$(id);b.classList.toggle('on',val===a);b.classList.toggle('codex',val==='codex'&&val===a);}
+  filterHistory();}
 async function renderResume(){stopPoll();show('resumeView');
   $('histCards').innerHTML='<div class="empty">loading…</div>';
   try{const j=await api('/api/history?limit=200');histList=j.history||[];filterHistory();}
@@ -422,7 +470,8 @@ function ago(sec){if(!sec)return'';let s=Math.floor(Date.now()/1000)-sec;if(s<0)
   if(d<30)return d+'d ago';return Math.floor(d/30)+'mo ago';}
 function filterHistory(){
   const q=($('histFilter').value||'').toLowerCase(),c=$('histCards');c.innerHTML='';
-  const items=histList.filter(e=>!q||((e.name||'')+' '+(e.short||'')+' '+e.agent).toLowerCase().includes(q));
+  const items=histList.filter(e=>(histAgent==='all'||e.agent===histAgent)&&
+    (!q||((e.name||'')+' '+(e.short||'')+' '+e.agent).toLowerCase().includes(q)));
   if(!items.length){c.innerHTML='<div class="empty">no matching sessions</div>';return;}
   for(const e of items){
     const d=document.createElement('div');d.className='card';d.onclick=()=>resumeSession(e);
@@ -446,6 +495,18 @@ async function resumeSession(e){
       history.replaceState({view:'detail',s},'');renderDetail(s);
     }else{setTimeout(backToList,800);}
   }catch(err){toast(err.message);}}
+
+// ---------- wake refresh: re-fetch the current view whenever the page returns to the foreground ----------
+// Mobile browsers freeze timers on a backgrounded tab, so on resume the screen is stale and the
+// first queued fetch can fail. Re-pull the active view's data the moment the page is visible again.
+function refreshCurrentView(){
+  if(!$('listView').classList.contains('hidden'))refresh();
+  else if(!$('detailView').classList.contains('hidden'))readScroll();
+  else if(!$('resumeView').classList.contains('hidden'))renderResume();
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshCurrentView();});
+window.addEventListener('pageshow',refreshCurrentView);
+window.addEventListener('focus',refreshCurrentView);
 
 // ---------- boot ----------
 async function boot(){
