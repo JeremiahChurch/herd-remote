@@ -58,6 +58,9 @@
   .badge.st-done{color:var(--done);border-color:var(--done)}
   .badge.st-unknown{color:var(--unknown);border-color:var(--unknown)}
   .agentTag{font-size:10px;color:var(--muted)}
+  /* resume: age pinned to a fixed left column so it never gets pushed off by a long path */
+  .card .age{flex:none;width:46px;font-size:11px;color:var(--muted);
+    font-variant-numeric:tabular-nums;text-align:left}
   .pid{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);font-weight:400}
 
   /* detail: scrollback fills, controls pinned to the bottom */
@@ -172,6 +175,7 @@
         <option data-kind="cmd" value="/usage">/usage</option>
       </optgroup>
       <optgroup label="keys">
+        <option data-kind="key" value="Shift+Tab">⇧Tab · cycle perm mode</option>
         <option data-kind="key" value="Space">Space</option>
         <option data-kind="key" value="Tab">Tab</option>
         <option data-kind="key" value="Backspace">Backspace</option>
@@ -468,17 +472,25 @@ function ago(sec){if(!sec)return'';let s=Math.floor(Date.now()/1000)-sec;if(s<0)
   if(s<60)return'just now';const m=Math.floor(s/60);if(m<60)return m+'m ago';
   const h=Math.floor(m/60);if(h<24)return h+'h ago';const d=Math.floor(h/24);
   if(d<30)return d+'d ago';return Math.floor(d/30)+'mo ago';}
+// agoShort is the compact form for the pinned left age column (now / 5m / 3h / 2d / 4mo).
+function agoShort(sec){if(!sec)return'';let s=Math.floor(Date.now()/1000)-sec;if(s<0)s=0;
+  if(s<60)return'now';const m=Math.floor(s/60);if(m<60)return m+'m';
+  const h=Math.floor(m/60);if(h<24)return h+'h';const d=Math.floor(h/24);
+  if(d<30)return d+'d';return Math.floor(d/30)+'mo';}
 function filterHistory(){
   const q=($('histFilter').value||'').toLowerCase(),c=$('histCards');c.innerHTML='';
+  // Search the name AND the full folder path (substring, so "exam" hits "name-example"),
+  // matching the folder-picker's path search. shortCwd is folded in so "~/foo" queries hit too.
   const items=histList.filter(e=>(histAgent==='all'||e.agent===histAgent)&&
-    (!q||((e.name||'')+' '+(e.short||'')+' '+e.agent).toLowerCase().includes(q)));
+    (!q||((e.name||'')+' '+(e.cwd||'')+' '+shortCwd(e.cwd)+' '+e.agent).toLowerCase().includes(q)));
   if(!items.length){c.innerHTML='<div class="empty">no matching sessions</div>';return;}
   for(const e of items){
     const d=document.createElement('div');d.className='card';d.onclick=()=>resumeSession(e);
     const tag=`<span class="agentTag"${e.agent==='codex'?' style="color:#bc8cff"':''}>${escHtml(e.agent)}</span>`;
-    const where=[e.short,ago(e.modified)].filter(Boolean).join(' · ');
-    d.innerHTML=`<div class="meta"><div class="t">${escHtml(e.name||'(untitled)')}</div>
-      <div class="s">${escHtml(where)}</div></div>
+    const where=shortCwd(e.cwd);
+    d.innerHTML=`<div class="age">${escHtml(agoShort(e.modified))}</div>
+      <div class="meta"><div class="t">${escHtml(e.name||'(untitled)')}</div>
+      <div class="s">${escHtml(where||'~')}</div></div>
       <div style="text-align:right">${tag}</div>`;
     c.appendChild(d);
   }

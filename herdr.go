@@ -195,7 +195,7 @@ func SendPrompt(pane, text string) error {
 var allowedKeys = map[string]bool{
 	"Enter": true, "Escape": true, "C-c": true,
 	"Up": true, "Down": true, "Left": true, "Right": true,
-	"Tab": true, "Backspace": true, "Space": true,
+	"Tab": true, "Shift+Tab": true, "Backspace": true, "Space": true,
 	"y": true, "n": true, "1": true, "2": true, "3": true, "4": true, "5": true,
 }
 
