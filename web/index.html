@@ -35,6 +35,9 @@
   .seg button.on.codex{background:#8957e5;color:#fff}
   /* each top-level view is a full-height flex column */
   .view{position:absolute;inset:0;display:flex;flex-direction:column}
+  /* .hidden must be generic: #scrollText (the copy-mode textarea) carries it too, and
+     without a rule it rendered as a full-height blank block under the scrollback. */
+  .hidden{display:none}
   .view.hidden{display:none}
   .scrollwrap{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
   .wrap{max-width:760px;margin:0 auto;width:100%;padding:12px 12px calc(env(safe-area-inset-bottom) + 24px)}
@@ -346,7 +349,7 @@ function renderDetail(s){cur=s;show('detailView');
   const dst=STATUSES.includes(s.status)?s.status:'unknown';
   $('dStatus').textContent=s.status||'';$('dStatus').className='badge st-'+dst;
   if(copyMode)toggleCopy(); // reset to the live colored view on entry
-  $('scroll').textContent='loading…';readScroll();startPoll();}
+  $('scroll').textContent='loading…';readScroll(true);startPoll();}
 function startPoll(){stopPoll();pollTimer=setInterval(()=>{if($('auto').checked&&!copyMode)readScroll();},2500);}
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
 function ansiStrip(s){return(s||'')
@@ -362,27 +365,40 @@ function collapseRules(s){return(s||'')
   .replace(/[-_=]{24,}/g,m=>m[0].repeat(24));}
 // Copy mode: freeze the scrollback into a readonly textarea (native mobile selection),
 // pause polling so nothing moves under your finger. Toggle back to the live colored view.
+let copyReturnTop=0; // scrollback offset to restore when leaving copy mode
 function toggleCopy(){
   copyMode=!copyMode;
-  const pre=$('scroll'),ta=$('scrollText'),btn=$('copyBtn');
+  const pre=$('scroll'),ta=$('scrollText'),btn=$('copyBtn'),box=$('dScroll');
   if(copyMode){
+    // Hiding the <pre> collapses the box's scrollHeight, so stash where we were first.
+    copyReturnTop=box.scrollTop;
     ta.value=ansiStrip(lastText);pre.classList.add('hidden');ta.classList.remove('hidden');
+    ta.scrollTop=ta.scrollHeight; // newest output, same as the live view
     btn.textContent='✓ Done';btn.classList.add('on');
   }else{
     ta.classList.add('hidden');pre.classList.remove('hidden');
-    btn.textContent='⧉ Copy';btn.classList.remove('on');readScroll();
+    btn.textContent='⧉ Copy';btn.classList.remove('on');
+    box.scrollTop=copyReturnTop;readScroll();
   }
 }
-async function readScroll(){
+// force=true pins to the bottom no matter where the box was scrolled - used when opening a
+// session, where the newest output is always what you want. Otherwise we only auto-follow if
+// you were already parked at the bottom, so scrolling back through history isn't yanked away.
+async function readScroll(force){
   if(!cur||reading||copyMode)return;
   const pane=cur.pane_id;reading=true;
   try{
     const j=await api(`/api/sessions/${encodeURIComponent(pane)}/read?lines=200`);
     if(!cur||cur.pane_id!==pane)return; // navigated away mid-request
     lastText=j.text||'';
-    const box=$('dScroll'),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
+    const box=$('dScroll'),atBottom=force||box.scrollHeight-box.scrollTop-box.clientHeight<40;
     $('scroll').innerHTML=ansiToHtml(collapseRules(lastText));
-    if(atBottom)box.scrollTop=box.scrollHeight;
+    if(atBottom){
+      box.scrollTop=box.scrollHeight;
+      // Long lines re-wrap after layout settles on a phone, which changes scrollHeight
+      // under us; re-pin on the next frame so we still land on the last line.
+      requestAnimationFrame(()=>{if(cur&&cur.pane_id===pane)box.scrollTop=box.scrollHeight;});
+    }
   }catch(e){}finally{reading=false;}
 }
 async function key(k){if(!cur)return;
@@ -391,7 +407,8 @@ async function key(k){if(!cur)return;
 async function sendPrompt(){if(!cur)return;const t=$('prompt').value;if(!t.trim())return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:t})});$('prompt').value='';toast('sent');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
-async function clearSession(){if(!cur)return;
+// /clear wipes the agent's context - destructive enough to gate behind a confirm, same as kill.
+async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipes the session context.'))return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:'/clear'})});toast('/clear');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
 // runCmd dispatches the command/key select: 'key' items reuse the allowlisted send-keys
