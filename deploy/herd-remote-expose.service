@@ -1,0 +1,19 @@
+[Unit]
+Description=herd-remote - publish the loopback port to the house LAN
+# Must run after the socket exists, otherwise the WSLExpose probe picks the wrong
+# loopback family (see deploy/expose-on-boot.sh).
+Requires=herd-remote.service
+After=herd-remote.service
+PartOf=herd-remote.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Port comes from HERD_REMOTE_ADDR; the script waits for the listener + WSL interop.
+Environment=HERD_REMOTE_ADDR=127.0.0.1:8787
+ExecStart=%h/herd-remote/deploy/expose-on-boot.sh
+# The script self-bounds to ~3.5 min worst case; give systemd headroom past that.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

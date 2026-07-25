@@ -1,11 +1,14 @@
 [Unit]
 Description=herd-remote - phone control surface for herdr sessions
 After=default.target
+# Pull the LAN exposure in on every start/restart, not just at boot.
+Wants=herd-remote-expose.service
 
 [Service]
 # Binary built from this repo (go build -o herd-remote .)
 ExecStart=%h/herd-remote/herd-remote
-# Bind loopback only; LAN reachability is provided by `expose-port add 8787`.
+# Bind loopback only; LAN reachability is provided by herd-remote-expose.service,
+# which runs the WSLExpose reconcile once this socket is up.
 Environment=HERD_REMOTE_ADDR=127.0.0.1:8787
 # herdr + herd-spawn live in ~/.local/bin; systemd --user has a minimal PATH.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

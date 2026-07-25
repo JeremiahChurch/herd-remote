@@ -25,18 +25,26 @@ else
 fi
 chmod 600 "$CFG/password"   # always enforce, even on a pre-existing file
 
-echo ">> installing systemd --user service"
+echo ">> installing systemd --user services"
 mkdir -p "$HOME/.config/systemd/user"
-sed "s#127.0.0.1:8787#127.0.0.1:${PORT}#" "$REPO/deploy/herd-remote.service" \
-  > "$HOME/.config/systemd/user/herd-remote.service"
+chmod +x "$REPO/deploy/expose-on-boot.sh"
+for unit in herd-remote.service herd-remote-expose.service; do
+  sed "s#127.0.0.1:8787#127.0.0.1:${PORT}#" "$REPO/deploy/$unit" \
+    > "$HOME/.config/systemd/user/$unit"
+done
 systemctl --user daemon-reload
 systemctl --user enable --now herd-remote.service
 loginctl enable-linger "$USER" 2>/dev/null || true
 echo "   systemctl --user status herd-remote   # to check"
 
+# herd-remote-expose runs the WSLExpose reconcile *after* the socket is up, at every
+# boot. Doing it here too would race the service start, so just enable + restart it
+# and let the unit's own wait loop do the work.
 echo ">> exposing port ${PORT} on the LAN (Windows host 10.10.69.99)"
 if command -v expose-port >/dev/null; then
-  expose-port add "$PORT" || echo "   (run 'expose-port install' once if this failed)"
+  systemctl --user enable herd-remote-expose.service
+  systemctl --user restart herd-remote-expose.service \
+    || echo "   (run 'expose-port install' once if this failed; journalctl --user -u herd-remote-expose)"
 else
   echo "   expose-port not found; skip"
 fi

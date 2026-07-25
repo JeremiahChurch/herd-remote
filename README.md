@@ -47,6 +47,7 @@ can only send known-safe tokens to a pane.
 - Binds `127.0.0.1` only. It is **not** on the LAN until you expose it.
 - LAN reachability comes from the existing `expose-port`/WSLExpose hop
   (`10.10.69.99:PORT -> 127.0.0.1:PORT`), which is **house-LAN only, never the tailnet**.
+  `herd-remote-expose.service` re-applies that hop at every boot (see below).
 - **Device lock:** scope the `WSL-Expose <port>` Windows firewall rule to your two
   fixed device IPs (see below). That is the real "only my phone + laptop" enforcement,
   done at the firewall before traffic reaches the app.
@@ -72,6 +73,32 @@ expose-port add 8787                                # publish to the house LAN
 ```
 
 Then on your phone/laptop: `http://10.10.69.99:8787`
+
+### Boot behavior (why the LAN port needs re-applying)
+
+`setup.sh` installs **two** user units:
+
+| Unit | Role |
+|---|---|
+| `herd-remote.service` | runs the binary on `127.0.0.1:PORT` |
+| `herd-remote-expose.service` | oneshot; re-applies the LAN portproxy once that socket is up |
+
+The second one exists because the `WSLExpose` scheduled task is triggered at Windows
+**logon** - before WSL boots and before herd-remote binds. At that point
+`wsl-expose.ps1`'s loopback probe finds nothing answering and falls back to its default
+`v4tov6 -> ::1:PORT` mapping. herd-remote binds IPv4-only, so that mapping never
+connects and the dash is dead on the LAN until someone re-runs `expose-port add` by hand.
+
+`herd-remote-expose.service` waits for the listener plus WSL interop, re-runs the
+reconcile so the probe succeeds (`v4tov4 -> 127.0.0.1:PORT`), then verifies the mapping
+and retries if the elevated task lags. It is ordered `After=herd-remote.service` and
+pulled in by `Wants=`, so it also re-runs on a manual restart.
+
+```bash
+systemctl --user status herd-remote-expose      # did boot exposure work?
+journalctl --user -u herd-remote-expose -n 20   # why not
+systemctl --user restart herd-remote-expose     # re-apply by hand
+```
 
 ### Lock it to your two devices (recommended)
 
