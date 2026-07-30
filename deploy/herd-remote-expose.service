@@ -6,6 +6,10 @@ Requires=herd-remote.service
 After=herd-remote.service
 PartOf=herd-remote.service
 
+# Deliberately no [Install] section: this unit is pulled in solely by
+# herd-remote.service's Wants=. Enabling it into default.target as well would add
+# a second, opposing edge to the graph and invites the ordering cycle back.
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
@@ -14,6 +18,3 @@ Environment=HERD_REMOTE_ADDR=127.0.0.1:8787
 ExecStart=%h/herd-remote/deploy/expose-on-boot.sh
 # The script self-bounds to ~3.5 min worst case; give systemd headroom past that.
 TimeoutStartSec=300
-
-[Install]
-WantedBy=default.target

@@ -38,11 +38,14 @@ loginctl enable-linger "$USER" 2>/dev/null || true
 echo "   systemctl --user status herd-remote   # to check"
 
 # herd-remote-expose runs the WSLExpose reconcile *after* the socket is up, at every
-# boot. Doing it here too would race the service start, so just enable + restart it
-# and let the unit's own wait loop do the work.
+# boot. Doing it here too would race the service start, so just restart it and let
+# the unit's own wait loop do the work. It is intentionally not enabled: it has no
+# [Install] section and is pulled in by herd-remote.service's Wants=.
 echo ">> exposing port ${PORT} on the LAN (Windows host 10.10.69.99)"
 if command -v expose-port >/dev/null; then
-  systemctl --user enable herd-remote-expose.service
+  # Clear a stale default.target.wants symlink from the pre-cycle-fix layout.
+  rm -f "$HOME/.config/systemd/user/default.target.wants/herd-remote-expose.service"
+  systemctl --user daemon-reload
   systemctl --user restart herd-remote-expose.service \
     || echo "   (run 'expose-port install' once if this failed; journalctl --user -u herd-remote-expose)"
 else

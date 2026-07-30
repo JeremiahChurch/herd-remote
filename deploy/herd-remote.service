@@ -1,6 +1,9 @@
 [Unit]
 Description=herd-remote - phone control surface for herdr sessions
-After=default.target
+# No After=default.target here. default.target implicitly gains After= on every
+# unit it Wants=, so ordering this service after it closes a cycle
+# (expose -> herd-remote -> default.target -> expose) and systemd resolves that
+# by deleting this unit's start job - nothing comes up at boot.
 # Pull the LAN exposure in on every start/restart, not just at boot.
 Wants=herd-remote-expose.service
 
