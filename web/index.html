@@ -150,7 +150,7 @@
       <button class="btn-accent" onclick="key('Enter')">✔ Enter</button>
       <button onclick="key('Escape')">✕ Esc</button>
       <button onclick="key('C-c')">⎉ C-c</button>
-      <button onclick="clearSession()">/clear</button>
+      <button onclick="key('Backspace')">⌫ Bksp</button>
     </div>
     <div class="grid4">
       <button onclick="key('Left')">◀</button>
@@ -170,20 +170,8 @@
       <button onclick="key('5')">5</button>
       <button onclick="closeSession()" class="danger">✕ kill</button>
     </div>
-    <select id="cmdSel" class="list-input" style="margin:0 0 8px" onchange="runCmd(this)">
-      <option value="">⌘ command / key…</option>
-      <optgroup label="slash">
-        <option data-kind="cmd" value="/compact">/compact</option>
-        <option data-kind="cmd" value="/context">/context</option>
-        <option data-kind="cmd" value="/usage">/usage</option>
-      </optgroup>
-      <optgroup label="keys">
-        <option data-kind="key" value="Shift+Tab">⇧Tab · cycle perm mode</option>
-        <option data-kind="key" value="Space">Space</option>
-        <option data-kind="key" value="Tab">Tab</option>
-        <option data-kind="key" value="Backspace">Backspace</option>
-      </optgroup>
-    </select>
+    <!-- Options are built in JS (renderCmdMenu) because the effort group differs per agent. -->
+    <select id="cmdSel" class="list-input" style="margin:0 0 8px" onchange="runCmd(this)"></select>
     <div class="promptbar">
       <textarea id="prompt" rows="2" placeholder="type a prompt…"></textarea>
       <button class="btn-accent" onclick="sendPrompt()">Send</button>
@@ -346,6 +334,7 @@ function openDetail(s){navTo({view:'detail',s});}
 function renderDetail(s){cur=s;show('detailView');
   $('dTitle').textContent=s.label||s.name||'session';
   $('dAgent').textContent=s.agent||'';$('dPane').textContent=s.pane_id||'';
+  renderCmdMenu(s.agent);
   const dst=STATUSES.includes(s.status)?s.status:'unknown';
   $('dStatus').textContent=s.status||'';$('dStatus').className='badge st-'+dst;
   if(copyMode)toggleCopy(); // reset to the live colored view on entry
@@ -411,6 +400,37 @@ async function sendPrompt(){if(!cur)return;const t=$('prompt').value;if(!t.trim(
 async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipes the session context.'))return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:'/clear'})});toast('/clear');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
+// Contents of the command/key picker. The effort group is agent-specific: Claude takes
+// `/effort <level>` as a one-shot command, but Codex has no equivalent - it only exposes
+// model + reasoning effort through the interactive /model picker, which you then drive
+// with the arrow buttons and Enter.
+// Deliberately absent: Shift+Tab (cycle permission mode). herdr's send-keys accepts the
+// name but emits a plain \t, and it delivers every key as its own write - so neither
+// "Shift+Tab" nor a manual Escape,[,Z lands as the contiguous CSI Z that Claude Code
+// needs. It typed a literal "[Z" into the composer instead. Re-add once herdr can send
+// BackTab or raw bytes.
+const CMD_MENU={
+  slash:[['/clear','/clear · wipes context'],['/compact','/compact'],
+         ['/context','/context'],['/usage','/usage']],
+  effort:{
+    claude:[['/effort auto','auto · model default'],['/effort low','low'],
+            ['/effort medium','medium'],['/effort high','high'],
+            ['/effort xhigh','xhigh'],['/effort max','max']],
+    codex:[['/model','/model · pick model + effort']],
+  },
+  keys:[['Space','Space'],['Tab','Tab']],
+};
+// Rebuilt on every detail open: optgroup hiding is unreliable in mobile select pickers,
+// so the wrong agent's effort options are never emitted rather than merely hidden.
+function renderCmdMenu(agent){
+  const opt=(kind,v,l)=>`<option data-kind="${kind}" value="${escHtml(v)}">${escHtml(l)}</option>`;
+  const grp=(label,items,kind)=>`<optgroup label="${label}">`+
+    items.map(([v,l])=>opt(kind,v,l)).join('')+'</optgroup>';
+  $('cmdSel').innerHTML='<option value="">⌘ command / key…</option>'
+    +grp('slash',CMD_MENU.slash,'cmd')
+    +grp('effort',CMD_MENU.effort[agent==='codex'?'codex':'claude'],'cmd')
+    +grp('keys',CMD_MENU.keys,'key');
+}
 // runCmd dispatches the command/key select: 'key' items reuse the allowlisted send-keys
 // path; 'cmd' items are typed as a slash-command prompt (text + Enter). Snaps back to the
 // header label after each run so the picker is a fire-and-reset control, not a mode.
@@ -419,6 +439,7 @@ async function runCmd(sel){
   sel.selectedIndex=0;
   if(!val||!cur)return;
   if(kind==='key')return key(val);
+  if(val==='/clear')return clearSession();   // keeps the destructive-action confirm
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:val})});
     toast(val);setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}

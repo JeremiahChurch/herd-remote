@@ -195,7 +195,10 @@ func SendPrompt(pane, text string) error {
 var allowedKeys = map[string]bool{
 	"Enter": true, "Escape": true, "C-c": true,
 	"Up": true, "Down": true, "Left": true, "Right": true,
-	"Tab": true, "Shift+Tab": true, "Backspace": true, "Space": true,
+	// No "Shift+Tab": herdr accepts the name but sends a plain \t, so it never cycles
+	// the permission mode. Sending Escape,[,Z by hand doesn't work either - herdr writes
+	// each key separately, so the agent sees ESC then a literal "[Z" rather than CSI Z.
+	"Tab": true, "Backspace": true, "Space": true,
 	"y": true, "n": true, "1": true, "2": true, "3": true, "4": true, "5": true,
 }
 
