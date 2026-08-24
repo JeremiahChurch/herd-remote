@@ -29,10 +29,12 @@
   button:active{transform:translateY(1px)}
   .btn-accent{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
   .btn-codex{background:#8957e5;color:#fff;border-color:transparent;font-weight:600}
+  .btn-hermes{background:#0f9b8e;color:#fff;border-color:transparent;font-weight:600}
   .seg{display:flex;gap:6px;padding:8px 12px 0}
   .seg button{flex:1;padding:7px 0;font-size:13px}
   .seg button.on{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
   .seg button.on.codex{background:#8957e5;color:#fff}
+  .seg button.on.hermes{background:#0f9b8e;color:#fff}
   /* each top-level view is a full-height flex column */
   .view{position:absolute;inset:0;display:flex;flex-direction:column}
   /* .hidden must be generic: #scrollText (the copy-mode textarea) carries it too, and
@@ -174,6 +176,10 @@
     <select id="cmdSel" class="list-input" style="margin:0 0 8px" onchange="runCmd(this)"></select>
     <div class="promptbar">
       <textarea id="prompt" rows="2" placeholder="type a prompt…"></textarea>
+      <!-- Queue is hermes-only (shown by renderDetail): it wraps the text in /queue, which
+           hands hermes the prompt for its NEXT turn instead of interrupting the current one.
+           Claude and Codex queue typed input on their own, so they get no button. -->
+      <button id="queueBtn" class="btn-hermes hidden" onclick="queuePrompt()">Queue</button>
       <button class="btn-accent" onclick="sendPrompt()">Send</button>
     </div>
   </div>
@@ -196,7 +202,7 @@
       onchange="$('folderFilter').value=this.options[this.selectedIndex].textContent"></select>
     <label class="fld">First prompt (optional)</label>
     <textarea id="spawnPrompt" class="list-input" rows="3" placeholder="what should it do?"></textarea>
-    <label class="fld">Model (picks the agent too — Claude on top, Codex below)</label>
+    <label class="fld">Model (picks the agent too — Claude, then Codex, then Hermes)</label>
     <select id="spawnModel" class="list-input" onchange="updateLaunchBtn()">
       <optgroup label="Claude">
         <option data-agent="claude" data-model="opus"   data-effort="">Opus 4.8</option>
@@ -208,6 +214,11 @@
         <option data-agent="codex" data-model="gpt-5.6-sol"   data-effort="medium">Codex · Sol · medium</option>
         <option data-agent="codex" data-model="gpt-5.6-terra" data-effort="high">Codex · Terra · high</option>
         <option data-agent="codex" data-model="gpt-5.6-terra" data-effort="medium">Codex · Terra · medium</option>
+      </optgroup>
+      <optgroup label="Hermes">
+        <!-- No model/effort: hermes reads both from ~/.hermes/config.yaml, and changes
+             them in-session with /model and /reasoning. One entry, nothing to drift. -->
+        <option data-agent="hermes" data-model="" data-effort="">Hermes</option>
       </optgroup>
     </select>
     <button class="btn-accent" id="launchBtn" style="width:100%" onclick="doSpawn()">Launch</button>
@@ -226,6 +237,7 @@
     <button id="haAll" class="on" onclick="setHistAgent('all')">All</button>
     <button id="haClaude" onclick="setHistAgent('claude')">Claude</button>
     <button id="haCodex" onclick="setHistAgent('codex')">Codex</button>
+    <button id="haHermes" onclick="setHistAgent('hermes')">Hermes</button>
   </div>
   <div style="padding:10px 12px 0"><input id="histFilter" class="list-input" style="margin:0"
     placeholder="filter by folder or name…" oninput="filterHistory()"
@@ -335,6 +347,7 @@ function renderDetail(s){cur=s;show('detailView');
   $('dTitle').textContent=s.label||s.name||'session';
   $('dAgent').textContent=s.agent||'';$('dPane').textContent=s.pane_id||'';
   renderCmdMenu(s.agent);
+  $('queueBtn').classList.toggle('hidden',s.agent!=='hermes');
   const dst=STATUSES.includes(s.status)?s.status:'unknown';
   $('dStatus').textContent=s.status||'';$('dStatus').className='badge st-'+dst;
   if(copyMode)toggleCopy(); // reset to the live colored view on entry
@@ -396,6 +409,13 @@ async function key(k){if(!cur)return;
 async function sendPrompt(){if(!cur)return;const t=$('prompt').value;if(!t.trim())return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:t})});$('prompt').value='';toast('sent');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
+// queuePrompt sends the box's text as `/queue <text>` (hermes only). Hermes takes it for
+// its next turn instead of cutting off the one in flight, so a follow-up thought from the
+// phone doesn't cost you the work already running.
+async function queuePrompt(){if(!cur)return;const t=$('prompt').value.trim();if(!t)return;
+  try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:'/queue '+t})});
+    $('prompt').value='';toast('queued');setTimeout(readScroll,400);}
+  catch(e){toast(e.message);}}
 // /clear wipes the agent's context - destructive enough to gate behind a confirm, same as kill.
 async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipes the session context.'))return;
   try{await api(`/api/sessions/${encodeURIComponent(cur.pane_id)}/prompt`,{method:'POST',body:JSON.stringify({text:'/clear'})});toast('/clear');setTimeout(readScroll,400);}
@@ -409,14 +429,27 @@ async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipe
 // "Shift+Tab" nor a manual Escape,[,Z lands as the contiguous CSI Z that Claude Code
 // needs. It typed a literal "[Z" into the composer instead. Re-add once herdr can send
 // BackTab or raw bytes.
+// Hermes names most of these differently (/compress, not /compact) and adds the two that
+// matter when it is mid-turn: /queue hands it a prompt for the next turn, /steer slips one
+// in after the current tool call. Neither interrupts, which is the whole point on a phone.
 const CMD_MENU={
-  slash:[['/clear','/clear · wipes context'],['/compact','/compact'],
-         ['/context','/context'],['/usage','/usage']],
+  slash:{
+    default:[['/clear','/clear · wipes context'],['/compact','/compact'],
+             ['/context','/context'],['/usage','/usage']],
+    hermes:[['/queue','/queue · usage (or use the Queue button)'],
+            ['/steer','/steer · nudge after the next tool call'],
+            ['/busy queue','/busy queue · Enter queues while busy'],
+            ['/clear','/clear · new session'],['/compress','/compress · compact context'],
+            ['/status','/status'],['/context','/context'],['/usage','/usage']],
+  },
   effort:{
     claude:[['/effort auto','auto · model default'],['/effort low','low'],
             ['/effort medium','medium'],['/effort high','high'],
             ['/effort xhigh','xhigh'],['/effort max','max']],
     codex:[['/model','/model · pick model + effort']],
+    hermes:[['/reasoning low','low'],['/reasoning medium','medium'],
+            ['/reasoning high','high'],['/reasoning xhigh','xhigh'],
+            ['/reasoning max','max'],['/model','/model · switch model']],
   },
   keys:[['Space','Space'],['Tab','Tab']],
 };
@@ -426,9 +459,10 @@ function renderCmdMenu(agent){
   const opt=(kind,v,l)=>`<option data-kind="${kind}" value="${escHtml(v)}">${escHtml(l)}</option>`;
   const grp=(label,items,kind)=>`<optgroup label="${label}">`+
     items.map(([v,l])=>opt(kind,v,l)).join('')+'</optgroup>';
+  const eff=CMD_MENU.effort[agent]||CMD_MENU.effort.claude;
   $('cmdSel').innerHTML='<option value="">⌘ command / key…</option>'
-    +grp('slash',CMD_MENU.slash,'cmd')
-    +grp('effort',CMD_MENU.effort[agent==='codex'?'codex':'claude'],'cmd')
+    +grp('slash',CMD_MENU.slash[agent]||CMD_MENU.slash.default,'cmd')
+    +grp('effort',eff,'cmd')
     +grp('keys',CMD_MENU.keys,'key');
 }
 // runCmd dispatches the command/key select: 'key' items reuse the allowlisted send-keys
@@ -462,11 +496,12 @@ function renderFolders(){
 }
 // selModel returns the currently selected model <option> (carries agent+model+effort).
 function selModel(){const s=$('spawnModel');return s.options[s.selectedIndex];}
-// updateLaunchBtn reflects the picked model on the single Launch button: its label
-// and its tint (accent for Claude, purple for Codex) so the agent still reads at a glance.
+// updateLaunchBtn reflects the picked model on the single Launch button: its label and
+// its tint (blue Claude, purple Codex, teal Hermes) so the agent reads at a glance.
+const AGENT_BTN={codex:'btn-codex',hermes:'btn-hermes'};
 function updateLaunchBtn(){const o=selModel();if(!o)return;const b=$('launchBtn');
   b.textContent='Launch '+o.textContent;
-  b.className=(o.dataset.agent==='codex'?'btn-codex':'btn-accent');}
+  b.className=AGENT_BTN[o.dataset.agent]||'btn-accent';}
 async function doSpawn(){
   // If the input looks like a path (starts with / ~ or ./), use it verbatim - even a
   // hidden dir like ~/.ssh. Otherwise treat the text as a filter word and use the
@@ -496,11 +531,15 @@ async function doSpawn(){
 }
 
 // ---------- resume (past sessions from disk) ----------
+// Tag tints match the launch-button colours: purple Codex, teal Hermes, default Claude.
+const AGENT_TAG_TINT={codex:'#bc8cff',hermes:'#5fd4c4'};
 let histList=[],histAgent='all';
 function showResume(){navTo({view:'resume'});}
 function setHistAgent(a){histAgent=a;
-  for(const [id,val] of [['haAll','all'],['haClaude','claude'],['haCodex','codex']]){
-    const b=$(id);b.classList.toggle('on',val===a);b.classList.toggle('codex',val==='codex'&&val===a);}
+  for(const [id,val] of [['haAll','all'],['haClaude','claude'],['haCodex','codex'],['haHermes','hermes']]){
+    const b=$(id);b.classList.toggle('on',val===a);
+    b.classList.toggle('codex',val==='codex'&&val===a);
+    b.classList.toggle('hermes',val==='hermes'&&val===a);}
   filterHistory();}
 async function renderResume(){stopPoll();show('resumeView');
   $('histCards').innerHTML='<div class="empty">loading…</div>';
@@ -524,7 +563,8 @@ function filterHistory(){
   if(!items.length){c.innerHTML='<div class="empty">no matching sessions</div>';return;}
   for(const e of items){
     const d=document.createElement('div');d.className='card';d.onclick=()=>resumeSession(e);
-    const tag=`<span class="agentTag"${e.agent==='codex'?' style="color:#bc8cff"':''}>${escHtml(e.agent)}</span>`;
+    const tint=AGENT_TAG_TINT[e.agent];
+    const tag=`<span class="agentTag"${tint?` style="color:${tint}"`:''}>${escHtml(e.agent)}</span>`;
     const where=shortCwd(e.cwd);
     d.innerHTML=`<div class="age">${escHtml(agoShort(e.modified))}</div>
       <div class="meta"><div class="t">${escHtml(e.name||'(untitled)')}</div>

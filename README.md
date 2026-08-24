@@ -5,8 +5,8 @@ A tiny phone-friendly web control surface for [herdr](https://herdr.dev) session
 Spawn a new agent session in any folder, see which sessions are **idle / working /
 blocked**, read a session's screen, and do the minimal interactions that matter from
 your phone: approve/deny a prompt, interrupt a hang, `/clear`, send a prompt, rename,
-or kill a session. Built for the case where you're away from the keyboard and a Codex
-or Claude session is stuck waiting on you.
+or kill a session. Built for the case where you're away from the keyboard and a Codex,
+Claude, or Hermes session is stuck waiting on you.
 
 It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
 `herd-spawn` helper). No daemon of its own beyond an HTTP server; herdr does the work.
@@ -20,7 +20,12 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   - `▲ ▼` to navigate a Codex approval menu, `y` / `n` / `1` `2` `3` for direct answers
   - `/clear`, free-text prompt box, rename, and close (kill).
   - a **command / key picker** (dropdown) for less-common inputs (`/compact`, `/context`,
-    `/usage`, `Space`, `Tab`, `Backspace`) so the button grid stays small.
+    `/usage`, `Space`, `Tab`, `Backspace`) so the button grid stays small. Its
+    contents follow the agent: Hermes gets `/queue`, `/steer`, `/busy queue`,
+    `/compress`, and `/reasoning <level>` in place of the Claude/Codex set.
+  - a **Queue** button beside Send on Hermes sessions. It sends `/queue <your text>`,
+    which hands Hermes the prompt for its next turn instead of interrupting the one
+    already running - the phone equivalent of not talking over it.
   - scrollback reads `--source recent`, so you can scroll well past the visible screen.
   - a **⧉ Copy** toggle freezes the scrollback into a plain read-only textarea (native,
     well-behaved mobile text selection) and **pauses polling** so nothing shifts under your
@@ -29,15 +34,34 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
     so the prompt line stays near the bottom instead of wrapping off-screen on a phone.
 - **Spawn** - optional session name, pick a folder under `$HOME` (filterable), optional
   first prompt, and a **model dropdown that also picks the agent** (Claude: Opus/Sonnet/
-  Fable; Codex: Sol/Terra x high/medium reasoning effort). One **Launch** button, tinted
+  Fable; Codex: Sol/Terra x high/medium reasoning effort; Hermes: one entry, since it
+  reads model and reasoning from `~/.hermes/config.yaml`). One **Launch** button, tinted
   to the chosen agent. The spawn name is passed to Claude's own `--name` so it shows
   inside Claude too, not just in herdr. After spawning it jumps straight into the new
   session and clears the form.
 - **Resume** - lists past sessions read straight from disk (Claude
   `~/.claude/projects/*/<uuid>.jsonl`, titled by the `ai-title` record; Codex
-  `~/.codex/session_index.jsonl`), most-recent first, filterable by folder/name and by a
-  **Claude / Codex** segmented toggle. Tap one to relaunch it (`claude --resume <id>` /
-  `codex resume <id>`) in a fresh herdr workspace.
+  `~/.codex/session_index.jsonl`; Hermes `~/.hermes/state.db`), most-recent first,
+  filterable by folder/name and by a **Claude / Codex / Hermes** segmented toggle. Tap
+  one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
+  `hermes --resume <id>`) in a fresh herdr workspace.
+
+## Hermes notes
+
+Hermes works like the other two, with a few differences worth knowing:
+
+- **Install the herdr plugin once:** `herdr integration install hermes`. That is what
+  makes a Hermes pane report idle/working/blocked, so it shows up in the session list at
+  all - and it's what herd-spawn waits on before typing a seed prompt.
+- **Seed prompts are typed, not passed.** Hermes' REPL takes no positional first prompt
+  (`-q`/`-z` are non-interactive one-shots), so herd-spawn waits for the session to come
+  up and then types it in.
+- **Submitting takes a separate Enter.** `herdr pane run` writes the text and the Enter
+  in one go; Hermes reads that as a paste, so the Enter lands as a newline and the prompt
+  sits unsent. Prompts to a Hermes pane are sent as `pane send-text` followed by a
+  `send-keys Enter`, which is what actually submits.
+- Sessions launch in Hermes' classic REPL (its default without `--tui`): line-based
+  output reads far better through the phone's scrollback than a full-screen TUI.
 
 All control keys are validated against an allowlist server-side, so the HTTP surface
 can only send known-safe tokens to a pane.
@@ -129,13 +153,15 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 | POST | `/api/sessions/{wid}/rename` | `{label}` nav label |
 | POST | `/api/sessions/{wid}/close` | kill workspace |
 | GET | `/api/folders` | spawn target folders |
-| GET | `/api/history?dir=&limit=` | past sessions (both agents) for resume |
+| GET | `/api/history?dir=&limit=` | past sessions (all agents) for resume |
 | POST | `/api/spawn` | `{dir,name,prompt,model,effort,agent,resume,background}` |
 
 ## Requirements
 
 - `herdr` and `herd-spawn` on `PATH` (this repo assumes `~/.local/bin`).
 - Go 1.18+ to build.
+- `python3` on `PATH` for the Hermes resume list - its sessions live in a WAL-mode
+  SQLite store, and reading it through python3's stdlib keeps this binary dependency-free.
 - WSL2 with the WSLExpose hop installed (`expose-port install`) for LAN access.
 
 ### Agent launchers (how sessions actually start)

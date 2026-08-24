@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -184,10 +185,60 @@ func ReadPane(pane string, lines int) (string, error) {
 	return r.Result.Read.Text, nil
 }
 
-// SendPrompt types text + Enter into a pane (the submit primitive).
+// SendPrompt types text into a pane and submits it (the submit primitive).
+//
+// claude/codex take `herdr pane run`, which writes the text and the Enter in one go.
+// Hermes' input reads that as a paste: the trailing Enter becomes a literal newline and
+// the prompt just sits in the composer unsent. For hermes, write the text and then send
+// Enter as its own key event - that is what actually submits.
 func SendPrompt(pane, text string) error {
+	if paneAgent(pane) == "hermes" {
+		if _, err := run(herdrBin, "pane", "send-text", pane, text); err != nil {
+			return err
+		}
+		time.Sleep(400 * time.Millisecond) // let the composer settle before the submit key
+		_, err := run(herdrBin, "pane", "send-keys", pane, "Enter")
+		return err
+	}
 	_, err := run(herdrBin, "pane", "run", pane, text)
 	return err
+}
+
+// paneAgent resolves which agent owns a pane, so SendPrompt can pick the right submit
+// shape. Best-effort: "" when herdr is unreachable or the pane has no agent, which lands
+// on the claude/codex path (what every pane used before hermes existed).
+//
+// Cached briefly because a pane's agent doesn't change under a live session, and this
+// sits in front of every prompt send - one `agent list` per prompt would otherwise stack
+// on top of the two the list view already makes.
+var paneAgentCache = struct {
+	sync.Mutex
+	at   time.Time
+	byID map[string]string
+}{}
+
+const paneAgentTTL = 30 * time.Second
+
+func paneAgent(pane string) string {
+	paneAgentCache.Lock()
+	defer paneAgentCache.Unlock()
+	if paneAgentCache.byID != nil && time.Since(paneAgentCache.at) < paneAgentTTL {
+		return paneAgentCache.byID[pane]
+	}
+	out, err := run(herdrBin, "agent", "list")
+	if err != nil {
+		return ""
+	}
+	var al agentListResp
+	if json.Unmarshal(out, &al) != nil {
+		return ""
+	}
+	byID := make(map[string]string, len(al.Result.Agents))
+	for _, a := range al.Result.Agents {
+		byID[a.PaneID] = a.Agent
+	}
+	paneAgentCache.at, paneAgentCache.byID = time.Now(), byID
+	return byID[pane]
 }
 
 // SendKey sends a single verified control key to a pane.
@@ -248,8 +299,9 @@ const codexDefaultModel = "gpt-5.6-sol"
 var codexEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
 
 // reSessionID guards a resume target before it becomes a herd-spawn -r shell token.
-// Claude ids are UUIDs; codex thread ids are UUID-ish - both are hex + dashes.
-var reSessionID = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
+// Claude ids are UUIDs and codex thread ids are UUID-ish (hex + dashes); hermes ids are
+// timestamp-stamped like 20260824_155337_c0c98b, hence the underscore.
+var reSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 
 // Spawn creates a new workspace in dir and launches the chosen agent, optionally
 // seeded. agent is "claude" (default) or "codex". name, when set, becomes the
@@ -261,7 +313,7 @@ func Spawn(dir, prompt, model, effort, agent, name, resumeID string, background 
 	if agent == "" {
 		agent = "claude"
 	}
-	if agent != "claude" && agent != "codex" {
+	if agent != "claude" && agent != "codex" && agent != "hermes" {
 		return "", fmt.Errorf("unknown agent: %q", agent)
 	}
 	if resumeID != "" && !reSessionID.MatchString(resumeID) {
@@ -283,8 +335,9 @@ func Spawn(dir, prompt, model, effort, agent, name, resumeID string, background 
 		if model != "" {
 			args = append(args, "-m", model)
 		}
-		// effort is codex-only; herd-spawn ignores -e for claude, but don't send it.
-		if effort != "" && agent == "codex" {
+		// effort maps to codex's model_reasoning_effort and hermes' --reasoning; claude
+		// has no launch-time equivalent, so never send it there.
+		if effort != "" && agent != "claude" {
 			args = append(args, "-e", effort)
 		}
 	}
@@ -347,13 +400,17 @@ func Folders() ([]string, error) {
 //           agent_session.value for a live claude pane equals this uuid.)
 //   codex:  ~/.codex/session_index.jsonl - a prebuilt {id, thread_name, updated_at}
 //           index. cwd isn't in it, so codex folder-filtering is best-effort.
+//   hermes: ~/.hermes/state.db - a SQLite session store (id, title, cwd, last_activity_at).
+//           Read through a python3 one-liner rather than a Go SQLite driver: this binary
+//           has no module dependencies and the store is WAL-mode, so a hand-rolled reader
+//           would miss anything still sitting in the -wal file.
 
 // HistoryEntry is one resumable past session from an agent's on-disk store.
 type HistoryEntry struct {
-	Agent    string `json:"agent"`    // claude | codex
+	Agent    string `json:"agent"`    // claude | codex | hermes
 	ID       string `json:"id"`       // resume target
-	Name     string `json:"name"`     // ai-title (claude) / thread_name (codex)
-	Cwd      string `json:"cwd"`      // claude: authoritative; codex: usually ""
+	Name     string `json:"name"`     // ai-title (claude) / thread_name (codex) / title (hermes)
+	Cwd      string `json:"cwd"`      // claude + hermes: authoritative; codex: usually ""
 	Modified int64  `json:"modified"` // unix seconds, for recency sort
 }
 
@@ -361,14 +418,15 @@ type HistoryEntry struct {
 // extract titles per request (each open is a file scan, so we cap the cost).
 const historyScanCap = 80
 
-// HistorySessions returns resumable past sessions from both agents, most-recent first.
-// filter, when set (case-insensitive), matches claude entries on cwd and codex entries
-// on name (codex has no cwd in its index). limit caps the returned list.
+// HistorySessions returns resumable past sessions from every agent, most-recent first.
+// filter, when set (case-insensitive), matches on cwd for claude/hermes and on name for
+// codex (codex has no cwd in its index). limit caps the returned list.
 func HistorySessions(filter string, limit int) []HistoryEntry {
 	if limit <= 0 {
 		limit = 60
 	}
 	all := append(claudeHistory(), codexHistory()...)
+	all = append(all, hermesHistory()...)
 	if filter = strings.ToLower(strings.TrimSpace(filter)); filter != "" {
 		kept := all[:0]
 		for _, e := range all {
@@ -507,4 +565,75 @@ func codexHistory() []HistoryEntry {
 		})
 	}
 	return out
+}
+
+// hermesStatePy dumps ~/.hermes/state.db's resumable sessions as JSON lines.
+//
+// Archived/hidden rows and empty shells are skipped, as is source "tool" (hermes' own
+// `sessions list` hides those too - they're subagent scratch, not something to resume).
+// The read is read-only; the temp-copy fallback covers the case where SQLite refuses a
+// read-only open because the WAL needs recovery and no hermes process is live to do it.
+const hermesStatePy = `
+import json, os, shutil, sqlite3, sys, tempfile
+
+db = os.path.expanduser("~/.hermes/state.db")
+if not os.path.exists(db):
+    sys.exit(0)
+
+Q = ("select id, coalesce(title, ''), coalesce(cwd, ''), "
+     "coalesce(last_activity_at, started_at, 0) from sessions "
+     "where coalesce(archived, 0) = 0 and coalesce(hidden, 0) = 0 "
+     "and coalesce(message_count, 0) > 0 and coalesce(source, '') != 'tool' "
+     "order by 4 desc limit 200")
+
+def rows(path, readonly=True):
+    uri = "file:%s%s" % (path, "?mode=ro" if readonly else "")
+    con = sqlite3.connect(uri, uri=True, timeout=2)
+    try:
+        return con.execute(Q).fetchall()
+    finally:
+        con.close()
+
+try:
+    found = rows(db)
+except Exception:
+    tmp = tempfile.mkdtemp()
+    try:
+        for ext in ("", "-wal", "-shm"):
+            if os.path.exists(db + ext):
+                shutil.copy2(db + ext, os.path.join(tmp, "state.db" + ext))
+        found = rows(os.path.join(tmp, "state.db"), readonly=False)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+for sid, title, cwd, ts in found:
+    print(json.dumps({"id": sid, "title": title, "cwd": cwd, "modified": int(ts or 0)}))
+`
+
+// hermesHistory lists resumable hermes sessions. Best-effort: any failure (no hermes
+// installed, no python3, unreadable store) yields no hermes entries rather than an error,
+// same as the other two readers.
+func hermesHistory() []HistoryEntry {
+	out, err := run("python3", "-c", hermesStatePy)
+	if err != nil {
+		return nil
+	}
+	var entries []HistoryEntry
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
+	for sc.Scan() {
+		var rec struct {
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			Cwd      string `json:"cwd"`
+			Modified int64  `json:"modified"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.ID == "" {
+			continue
+		}
+		entries = append(entries, HistoryEntry{
+			Agent: "hermes", ID: rec.ID, Name: rec.Title, Cwd: rec.Cwd, Modified: rec.Modified,
+		})
+	}
+	return entries
 }
