@@ -205,22 +205,27 @@
     <label class="fld">Model (picks the agent too — Claude, then Codex, then Hermes)</label>
     <select id="spawnModel" class="list-input" onchange="updateLaunchBtn()">
       <optgroup label="Claude">
-        <option data-agent="claude" data-model="opus"   data-effort="">Opus 4.8</option>
-        <option data-agent="claude" data-model="sonnet" data-effort="">Sonnet 5</option>
-        <option data-agent="claude" data-model="fable"  data-effort="">Fable 5</option>
+        <!-- Claude Code aliases: each always resolves to the newest model in that family,
+             so these never need a version bump. -->
+        <option data-agent="claude" data-model="opus"   >Opus (latest)</option>
+        <option data-agent="claude" data-model="sonnet" >Sonnet (latest)</option>
+        <option data-agent="claude" data-model="fable"  >Fable (latest)</option>
+        <option data-agent="claude" data-model="haiku"  >Haiku (latest)</option>
       </optgroup>
-      <optgroup label="Codex">
-        <option data-agent="codex" data-model="gpt-5.6-sol"   data-effort="high">Codex · Sol · high</option>
-        <option data-agent="codex" data-model="gpt-5.6-sol"   data-effort="medium">Codex · Sol · medium</option>
-        <option data-agent="codex" data-model="gpt-5.6-terra" data-effort="high">Codex · Terra · high</option>
-        <option data-agent="codex" data-model="gpt-5.6-terra" data-effort="medium">Codex · Terra · medium</option>
+      <optgroup label="Codex" id="codexGroup">
+        <!-- Rebuilt from /api/models (codex's own model cache) by loadModels(). -->
+        <option data-agent="codex" data-model="">Codex · config default</option>
       </optgroup>
       <optgroup label="Hermes">
         <!-- No model/effort: hermes reads both from ~/.hermes/config.yaml, and changes
              them in-session with /model and /reasoning. One entry, nothing to drift. -->
-        <option data-agent="hermes" data-model="" data-effort="">Hermes</option>
+        <option data-agent="hermes" data-model="">Hermes</option>
       </optgroup>
     </select>
+    <div id="effortRow" class="hidden">
+      <label class="fld">Reasoning effort</label>
+      <select id="spawnEffort" class="list-input" onchange="updateLaunchBtn()"></select>
+    </div>
     <button class="btn-accent" id="launchBtn" style="width:100%" onclick="doSpawn()">Launch</button>
     <p id="spawnMsg" style="color:var(--muted)"></p>
   </div></div>
@@ -508,7 +513,7 @@ async function closeSession(){if(!cur)return;if(!confirm('Kill this session?'))r
 
 // ---------- spawn ----------
 function showSpawn(){navTo({view:'spawn'});}
-async function renderSpawn(){stopPoll();show('spawnView');$('spawnMsg').textContent='';updateLaunchBtn();
+async function renderSpawn(){stopPoll();show('spawnView');$('spawnMsg').textContent='';updateLaunchBtn();loadModels();
   try{const j=await api('/api/folders');folders=j.folders||[];renderFolders();}catch(e){toast(e.message);}}
 function renderFolders(){
   const f=$('folderFilter').value.toLowerCase(),sel=$('folder');sel.innerHTML='';
@@ -516,13 +521,38 @@ function renderFolders(){
     const o=document.createElement('option');o.value=d.path;o.textContent=d.short;sel.appendChild(o);}
   if(sel.options.length)sel.selectedIndex=0;
 }
-// selModel returns the currently selected model <option> (carries agent+model+effort).
+// selModel returns the currently selected model <option> (carries agent+model).
 function selModel(){const s=$('spawnModel');return s.options[s.selectedIndex];}
+// loadModels rebuilds the Codex group from codex's own model cache, so new Codex models
+// show up without a herd-remote release. The selection survives the rebuild by slug.
+let codexModels=[];
+async function loadModels(){
+  try{const j=await api('/api/models');codexModels=j.codex||[];}catch(e){return;}
+  const prev=selModel(),keep=prev&&prev.dataset.agent==='codex'?prev.dataset.model:null;
+  const g=$('codexGroup');g.innerHTML='';
+  const add=(slug,label)=>{const o=document.createElement('option');
+    o.dataset.agent='codex';o.dataset.model=slug;o.textContent=label;g.appendChild(o);
+    if(keep!==null&&slug===keep)o.selected=true;};
+  add('','Codex · config default');
+  for(const m of codexModels)add(m.slug,'Codex · '+m.name);
+  updateLaunchBtn();}
+// renderEffort shows the effort picker for Codex only, offering the picked model's own
+// levels. Blank means codex's config.toml default. The previous choice sticks if valid.
+function renderEffort(){const o=selModel(),row=$('effortRow'),sel=$('spawnEffort');
+  if(!o||o.dataset.agent!=='codex'){row.classList.add('hidden');return;}
+  row.classList.remove('hidden');
+  const m=codexModels.find(x=>x.slug===o.dataset.model);
+  const levels=m?m.efforts:['low','medium','high','xhigh'];
+  const prev=sel.value;sel.innerHTML='<option value="">config default</option>'
+    +levels.map(l=>`<option value="${l}">${l}</option>`).join('');
+  if(levels.includes(prev))sel.value=prev;}
+function selEffort(){const o=selModel();return o&&o.dataset.agent==='codex'?$('spawnEffort').value:'';}
 // updateLaunchBtn reflects the picked model on the single Launch button: its label and
 // its tint (blue Claude, purple Codex, teal Hermes) so the agent reads at a glance.
 const AGENT_BTN={codex:'btn-codex',hermes:'btn-hermes'};
 function updateLaunchBtn(){const o=selModel();if(!o)return;const b=$('launchBtn');
-  b.textContent='Launch '+o.textContent;
+  renderEffort();const eff=selEffort();
+  b.textContent='Launch '+o.textContent+(eff?' · '+eff:'');
   b.className=AGENT_BTN[o.dataset.agent]||'btn-accent';}
 async function doSpawn(){
   // If the input looks like a path (starts with / ~ or ./), use it verbatim - even a
@@ -534,7 +564,7 @@ async function doSpawn(){
   if(!dir)dir=$('folder').value;
   if(!dir){toast('pick or type a folder');return;}
   const o=selModel();
-  const agent=o.dataset.agent, model=o.dataset.model||'', effort=o.dataset.effort||'';
+  const agent=o.dataset.agent, model=o.dataset.model||'', effort=selEffort();
   const name=$('spawnName').value.trim();
   $('spawnMsg').textContent=`spawning ${agent}…`;
   try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({

@@ -289,14 +289,80 @@ func CloseWorkspace(workspaceID string) error {
 	return err
 }
 
-// codexDefaultModel is what a blank Model field means for a Codex spawn: match
-// the user's ~/.codex/config.toml default so phone spawns get the same shape as
-// a terminal `codexd`. Claude is left blank on purpose (its own default is Opus).
-const codexDefaultModel = "gpt-5.6-sol"
-
 // codexEfforts is the allowlist for the codex reasoning-effort passthrough, so the
 // HTTP layer can only hand herd-spawn a known-good value (it becomes a shell token).
-var codexEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
+// It is the union of every level codex's model list has offered; the per-model subset
+// comes from CodexModels, so this only needs a new entry when codex invents a level.
+var codexEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true, "ultra": true}
+
+// CodexModel is one entry in the phone's Codex model dropdown.
+type CodexModel struct {
+	Slug          string   `json:"slug"`
+	Name          string   `json:"name"`
+	Efforts       []string `json:"efforts"`
+	DefaultEffort string   `json:"default_effort"`
+}
+
+// codexFallbackModels is used only when codex's own cache is missing or unreadable.
+var codexFallbackModels = []CodexModel{
+	{Slug: "gpt-6.1-sol", Name: "GPT-6.1-Sol", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+	{Slug: "gpt-6-luna", Name: "GPT-6-Luna", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+}
+
+// CodexModels lists the models codex itself would show in its /model picker. Codex
+// refreshes ~/.codex/models_cache.json from OpenAI on its own, so reading it keeps the
+// dropdown current with no herd-remote release. Hidden models are skipped; order is
+// codex's own priority. Efforts are filtered through codexEfforts so the UI never
+// offers a level the spawn path would reject.
+func CodexModels() []CodexModel {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return codexFallbackModels
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "models_cache.json"))
+	if err != nil {
+		return codexFallbackModels
+	}
+	var cache struct {
+		Models []struct {
+			Slug        string `json:"slug"`
+			DisplayName string `json:"display_name"`
+			Visibility  string `json:"visibility"`
+			Priority    int    `json:"priority"`
+			Default     string `json:"default_reasoning_level"`
+			Levels      []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &cache) != nil {
+		return codexFallbackModels
+	}
+	sort.SliceStable(cache.Models, func(i, j int) bool { return cache.Models[i].Priority < cache.Models[j].Priority })
+	var out []CodexModel
+	for _, m := range cache.Models {
+		if m.Visibility != "list" || !reModelSlug.MatchString(m.Slug) {
+			continue
+		}
+		cm := CodexModel{Slug: m.Slug, Name: m.DisplayName, DefaultEffort: m.Default}
+		for _, l := range m.Levels {
+			if codexEfforts[l.Effort] {
+				cm.Efforts = append(cm.Efforts, l.Effort)
+			}
+		}
+		if cm.Name == "" {
+			cm.Name = m.Slug
+		}
+		out = append(out, cm)
+	}
+	if len(out) == 0 {
+		return codexFallbackModels
+	}
+	return out
+}
+
+// reModelSlug guards a model id before it becomes a herd-spawn -m shell token.
+var reModelSlug = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // reSessionID guards a resume target before it becomes a herd-spawn -r shell token.
 // Claude ids are UUIDs and codex thread ids are UUID-ish (hex + dashes); hermes ids are
@@ -319,8 +385,10 @@ func Spawn(dir, prompt, model, effort, agent, name, resumeID string, background 
 	if resumeID != "" && !reSessionID.MatchString(resumeID) {
 		return "", fmt.Errorf("bad resume id")
 	}
-	if resumeID == "" && model == "" && agent == "codex" {
-		model = codexDefaultModel
+	// A blank codex model is deliberate: codex then uses ~/.codex/config.toml's default,
+	// same as a terminal launch.
+	if model != "" && !reModelSlug.MatchString(model) {
+		return "", fmt.Errorf("bad model: %q", model)
 	}
 	if effort != "" && !codexEfforts[effort] {
 		return "", fmt.Errorf("unknown effort: %q", effort)

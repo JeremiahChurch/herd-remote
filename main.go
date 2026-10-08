@@ -240,6 +240,16 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
 }
 
+// handleModels serves the Codex model list read live from codex's own cache. Claude
+// needs no endpoint: its dropdown uses Claude Code's aliases (opus, sonnet, ...),
+// which always resolve to the newest model of that family.
+func handleModels(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"codex": CodexModels()})
+}
+
 func handleFolders(w http.ResponseWriter, r *http.Request) {
 	if !methodGuard(w, r, http.MethodGet) {
 		return
@@ -491,6 +501,7 @@ func main() {
 	mux.HandleFunc("/api/folders", requireAuth(handleFolders))
 	mux.HandleFunc("/api/history", requireAuth(handleHistory))
 	mux.HandleFunc("/api/spawn", requireAuth(handleSpawn))
+	mux.HandleFunc("/api/models", requireAuth(handleModels))
 
 	srv := &http.Server{
 		Addr:         addr,

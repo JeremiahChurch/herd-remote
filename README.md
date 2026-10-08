@@ -34,8 +34,11 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
     so the prompt line stays near the bottom instead of wrapping off-screen on a phone.
 - **Spawn** - optional session name, pick a folder under `$HOME` (filterable), optional
   first prompt, and a **model dropdown that also picks the agent** (Claude: Opus/Sonnet/
-  Fable; Codex: Sol/Terra x high/medium reasoning effort; Hermes: one entry, since it
-  reads model and reasoning from `~/.hermes/config.yaml`). One **Launch** button, tinted
+  Fable/Haiku via Claude Code's aliases, which always resolve to the newest model in
+  each family; Codex: read live from codex's own `~/.codex/models_cache.json`, plus a
+  reasoning-effort picker with that model's levels; Hermes: one entry, since it reads
+  model and reasoning from `~/.hermes/config.yaml`). New models appear without a
+  herd-remote release. One **Launch** button, tinted
   to the chosen agent. The spawn name is passed to Claude's own `--name` so it shows
   inside Claude too, not just in herdr. After spawning it jumps straight into the new
   session and clears the form.
