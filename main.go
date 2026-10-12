@@ -232,12 +232,12 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	if !methodGuard(w, r, http.MethodGet) {
 		return
 	}
-	sessions, err := ListSessions()
+	sessions, machines, err := ListSessions()
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions, "machines": machines})
 }
 
 // handleModels serves the Codex model list read live from codex's own cache. Claude
@@ -250,16 +250,49 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"codex": CodexModels()})
 }
 
+// machineParam resolves the ?machine= query param ("" = this box), writing a 400 and
+// returning ok=false when it names no enabled saved machine.
+func machineParam(w http.ResponseWriter, r *http.Request) (Machine, bool) {
+	m, err := lookupMachine(r.URL.Query().Get("machine"))
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return Machine{}, false
+	}
+	return m, true
+}
+
+// handleMachines lists the spawn targets: this box plus every enabled saved machine.
+func handleMachines(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"machines": Machines()})
+}
+
 func handleFolders(w http.ResponseWriter, r *http.Request) {
 	if !methodGuard(w, r, http.MethodGet) {
 		return
 	}
-	dirs, err := Folders()
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, err.Error())
+	m, ok := machineParam(w, r)
+	if !ok {
 		return
 	}
-	home, _ := os.UserHomeDir()
+	var (
+		dirs   []string
+		home   string
+		agents []string // nil = this box (all agents assumed present)
+		err    error
+	)
+	if m.ID == "" {
+		dirs, err = Folders()
+		home, _ = os.UserHomeDir()
+	} else {
+		dirs, home, agents, err = RemoteFolders(m)
+	}
+	if err != nil {
+		apiError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	// present ~-relative for compactness on a phone
 	rel := make([]map[string]string, 0, len(dirs))
 	for _, d := range dirs {
@@ -269,7 +302,7 @@ func handleFolders(w http.ResponseWriter, r *http.Request) {
 		}
 		rel = append(rel, map[string]string{"path": d, "short": short})
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"folders": rel})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"folders": rel, "agents": agents})
 }
 
 func handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +349,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Agent      string `json:"agent"`
 		Name       string `json:"name"`
 		Resume     string `json:"resume"`
+		Machine    string `json:"machine"`
 		Background bool   `json:"background"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -339,7 +373,12 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := Spawn(body.Dir, body.Prompt, body.Model, body.Effort, body.Agent, name, body.Resume, body.Background)
+	m, err := lookupMachine(body.Machine)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out, err := Spawn(m, body.Dir, body.Prompt, body.Model, body.Effort, body.Agent, name, body.Resume, body.Background)
 	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
@@ -355,17 +394,18 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	// herd-spawn's -l already labeled the workspace (herdr nav + this app's list).
 	// Also stamp the pane/agent border so the name shows everywhere in herdr.
 	if name != "" && pane != "" {
-		_, _ = run(herdrBin, "pane", "rename", pane, name)
-		_, _ = run(herdrBin, "agent", "rename", pane, name)
+		_, _ = herdrOn(m.ID, "pane", "rename", pane, name)
+		_, _ = herdrOn(m.ID, "agent", "rename", pane, name)
 	}
 	label := name
 	writeJSON(w, http.StatusOK, map[string]string{
 		"result": out, "workspace_id": wid, "pane_id": pane,
 		"agent": body.Agent, "dir": body.Dir, "label": label,
+		"machine": m.ID, "machine_label": m.Label,
 	})
 }
 
-// /api/sessions/{pane-or-wid}/{action}
+// /api/sessions/{pane-or-wid}/{action}?machine=<id>
 func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -386,6 +426,11 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 	} else if !methodGuard(w, r, http.MethodPost) {
 		return
 	}
+	m, ok := machineParam(w, r)
+	if !ok {
+		return
+	}
+	mid := m.ID
 
 	switch action {
 	case "read":
@@ -400,7 +445,7 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 		} else if lines > 500 {
 			lines = 500
 		}
-		text, err := ReadPane(id, lines)
+		text, err := ReadPane(mid, id, lines)
 		if err != nil {
 			apiError(w, http.StatusBadGateway, err.Error())
 			return
@@ -415,7 +460,7 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusBadRequest, "bad body")
 			return
 		}
-		if err := SendPrompt(id, body.Text); err != nil {
+		if err := SendPrompt(mid, id, body.Text); err != nil {
 			apiError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -429,7 +474,7 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusBadRequest, "bad body")
 			return
 		}
-		if err := SendKey(id, body.Key); err != nil {
+		if err := SendKey(mid, id, body.Key); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -444,14 +489,14 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusBadRequest, "bad body")
 			return
 		}
-		if err := Rename(id, body.Pane, body.Label); err != nil {
+		if err := Rename(mid, id, body.Pane, body.Label); err != nil {
 			apiError(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	case "close":
-		if err := CloseWorkspace(id); err != nil {
+		if err := CloseWorkspace(mid, id); err != nil {
 			apiError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -502,6 +547,7 @@ func main() {
 	mux.HandleFunc("/api/history", requireAuth(handleHistory))
 	mux.HandleFunc("/api/spawn", requireAuth(handleSpawn))
 	mux.HandleFunc("/api/models", requireAuth(handleModels))
+	mux.HandleFunc("/api/machines", requireAuth(handleMachines))
 
 	srv := &http.Server{
 		Addr:         addr,

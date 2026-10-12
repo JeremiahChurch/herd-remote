@@ -26,21 +26,30 @@ const (
 )
 
 // Session is the flattened view the UI consumes: one agent-bearing pane.
+// Pane and workspace ids are scoped to one herdr server, so a session is identified by
+// (Machine, PaneID): the Shop PC and this box can both have a w2:p1.
 type Session struct {
-	WorkspaceID string `json:"workspace_id"`
-	PaneID      string `json:"pane_id"`
-	Label       string `json:"label"`   // workspace label = what shows in herdr's nav
-	Name        string `json:"name"`    // agent-reported name (often folder/worktree)
-	Agent       string `json:"agent"`   // claude | codex | ...
-	Status      string `json:"status"`  // idle | working | blocked | done | unknown
-	Cwd         string `json:"cwd"`     // foreground cwd
-	Number      int    `json:"number"`  // stable-ish nav number
-	Focused     bool   `json:"focused"` // currently focused in the TUI
+	Machine      string `json:"machine"`       // saved herdr machine id; "" = this box
+	MachineLabel string `json:"machine_label"` // that machine's label, e.g. "Shop PC"
+	WorkspaceID  string `json:"workspace_id"`
+	PaneID       string `json:"pane_id"`
+	Label        string `json:"label"`   // workspace label = what shows in herdr's nav
+	Name         string `json:"name"`    // agent-reported name (often folder/worktree)
+	Agent        string `json:"agent"`   // claude | codex | ...
+	Status       string `json:"status"`  // idle | working | blocked | done | unknown
+	Cwd          string `json:"cwd"`     // foreground cwd
+	Number       int    `json:"number"`  // stable-ish nav number
+	Focused      bool   `json:"focused"` // currently focused in the TUI
 }
 
 // run executes a herdr subcommand and returns raw stdout.
 func run(bin string, args ...string) ([]byte, error) {
-	ctx, cancel := contextWithTimeout(cliTimout)
+	return runT(cliTimout, bin, args...)
+}
+
+// runT is run with an explicit timeout.
+func runT(timeout time.Duration, bin string, args ...string) ([]byte, error) {
+	ctx, cancel := contextWithTimeout(timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.Output()
@@ -51,6 +60,113 @@ func run(bin string, args ...string) ([]byte, error) {
 		return out, fmt.Errorf("%s %s: %w", bin, strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+// --- remote machines ---
+//
+// herdr 0.9 saves SSH machines (`herdr machine add`) and forwards any API command to one
+// with the global `--machine <id>` prefix, over its own persistent SSH link. Every pane
+// operation here goes through that, so a Shop PC pane is driven exactly like a local one.
+// Two things herdr does not forward: listing folders and running herd-spawn. Those go
+// over plain ssh to the machine's saved target (see sshRun).
+
+// Machine is one enabled saved herdr machine.
+type Machine struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Target string `json:"-"` // ssh destination (an ~/.ssh/config Host); never sent to the phone
+}
+
+// remoteListTimeout bounds one machine's part of the session list, so an offline Shop PC
+// costs the phone a few seconds instead of the full CLI timeout on every refresh.
+const remoteListTimeout = 6 * time.Second
+
+var machinesCache = struct {
+	sync.Mutex
+	at   time.Time
+	list []Machine
+}{}
+
+// Machines lists enabled saved machines. Cached briefly: it is a local config read, but
+// it sits in front of every remote request for id validation.
+func Machines() []Machine {
+	machinesCache.Lock()
+	defer machinesCache.Unlock()
+	if machinesCache.list != nil && time.Since(machinesCache.at) < 30*time.Second {
+		return machinesCache.list
+	}
+	list := []Machine{}
+	if out, err := run(herdrBin, "machine", "list", "--json"); err == nil {
+		var raw []struct {
+			ID      string `json:"id"`
+			Label   string `json:"label"`
+			Target  string `json:"target"`
+			Enabled bool   `json:"enabled"`
+		}
+		if json.Unmarshal(out, &raw) == nil {
+			for _, m := range raw {
+				if m.Enabled && reMachineID.MatchString(m.ID) {
+					list = append(list, Machine{ID: m.ID, Label: m.Label, Target: m.Target})
+				}
+			}
+		}
+	}
+	machinesCache.at, machinesCache.list = time.Now(), list
+	return list
+}
+
+// reMachineID: herdr machine ids are hex digests. Checked before an id becomes argv.
+var reMachineID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// reSSHTarget guards the ssh destination; no leading '-' so it can never read as a flag.
+var reSSHTarget = regexp.MustCompile(`^[A-Za-z0-9_.@][A-Za-z0-9_.@-]*$`)
+
+// lookupMachine resolves a machine id from the phone. "" is this box and always valid;
+// anything else must be an enabled saved machine, so the HTTP layer can't point
+// `--machine` or ssh at an arbitrary host.
+func lookupMachine(id string) (Machine, error) {
+	if id == "" {
+		return Machine{}, nil
+	}
+	for _, m := range Machines() {
+		if m.ID == id {
+			return m, nil
+		}
+	}
+	return Machine{}, fmt.Errorf("unknown machine: %q", id)
+}
+
+// herdrOn runs a herdr API command on a machine ("" = this box).
+func herdrOn(machine string, args ...string) ([]byte, error) {
+	return herdrOnT(cliTimout, machine, args...)
+}
+
+func herdrOnT(timeout time.Duration, machine string, args ...string) ([]byte, error) {
+	if machine != "" {
+		args = append([]string{"--machine", machine}, args...)
+	}
+	return runT(timeout, herdrBin, args...)
+}
+
+// shellQuote single-quotes s for the remote shell ssh hands its command line to.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// sshRun runs a command line on a machine's ssh target. BatchMode so a missing key or
+// an unapproved 1Password prompt fails fast instead of hanging the request.
+func sshRun(m Machine, timeout time.Duration, cmdline string) ([]byte, error) {
+	if !reSSHTarget.MatchString(m.Target) {
+		return nil, fmt.Errorf("machine %q has no usable ssh target", m.Label)
+	}
+	return runT(timeout, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", m.Target, cmdline)
+}
+
+// MachineStatus reports whether a machine's sessions made it into the list.
+type MachineStatus struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Error string `json:"error,omitempty"`
 }
 
 // --- JSON shapes emitted by herdr (only the fields we use) ---
@@ -91,58 +207,44 @@ type readResp struct {
 	} `json:"result"`
 }
 
-// ListSessions merges `herdr agent list` (agent-bearing panes) with
-// `herdr workspace list` (nav labels + numbers), keyed by workspace_id.
-func ListSessions() ([]Session, error) {
-	aOut, err := run(herdrBin, "agent", "list")
+// ListSessions gathers agent sessions from this box and every enabled saved machine.
+// A local failure is an error (herdr itself is down); a remote failure only drops that
+// machine's sessions and is reported in the returned statuses, so an offline Shop PC
+// never blanks the phone's list.
+func ListSessions() ([]Session, []MachineStatus, error) {
+	machines := Machines()
+	type res struct {
+		sessions []Session
+		err      error
+	}
+	results := make([]res, len(machines))
+	var wg sync.WaitGroup
+	for i, m := range machines {
+		wg.Add(1)
+		go func(i int, m Machine) {
+			defer wg.Done()
+			ss, err := listOn(m, remoteListTimeout)
+			results[i] = res{ss, err}
+		}(i, m)
+	}
+	out, err := listOn(Machine{}, cliTimout)
+	wg.Wait()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var al agentListResp
-	if err := json.Unmarshal(aOut, &al); err != nil {
-		return nil, fmt.Errorf("parse agent list: %w", err)
-	}
-
-	// Workspace labels/numbers (best-effort; UI still works without them).
-	labels := map[string]string{}
-	numbers := map[string]int{}
-	if wOut, err := run(herdrBin, "workspace", "list"); err == nil {
-		var wl workspaceListResp
-		if json.Unmarshal(wOut, &wl) == nil {
-			for _, w := range wl.Result.Workspaces {
-				labels[w.WorkspaceID] = w.Label
-				numbers[w.WorkspaceID] = w.Number
-			}
+	statuses := make([]MachineStatus, 0, len(machines))
+	for i, m := range machines {
+		st := MachineStatus{ID: m.ID, Label: m.Label}
+		if results[i].err != nil {
+			st.Error = results[i].err.Error()
+		} else {
+			out = append(out, results[i].sessions...)
 		}
+		statuses = append(statuses, st)
 	}
 
-	out := make([]Session, 0, len(al.Result.Agents))
-	for _, a := range al.Result.Agents {
-		cwd := a.ForegroundCwd
-		if cwd == "" {
-			cwd = a.Cwd
-		}
-		s := Session{
-			WorkspaceID: a.WorkspaceID,
-			PaneID:      a.PaneID,
-			Label:       labels[a.WorkspaceID],
-			Name:        a.Name,
-			Agent:       a.Agent,
-			Status:      a.AgentStatus,
-			Cwd:         cwd,
-			Number:      numbers[a.WorkspaceID],
-			Focused:     a.Focused,
-		}
-		if s.Label == "" {
-			s.Label = a.Name
-		}
-		if s.Label == "" {
-			s.Label = filepath.Base(cwd)
-		}
-		out = append(out, s)
-	}
-
-	// Sort: blocked first (needs attention), then working, then by nav number.
+	// Sort: blocked first (needs attention), then working, then local before remote,
+	// then by nav number.
 	rank := func(st string) int {
 		switch st {
 		case "blocked":
@@ -162,21 +264,86 @@ func ListSessions() ([]Session, error) {
 		if ri != rj {
 			return ri < rj
 		}
+		if out[i].Machine != out[j].Machine {
+			return out[i].Machine < out[j].Machine // "" (local) sorts first
+		}
 		return out[i].Number < out[j].Number
 	})
+	return out, statuses, nil
+}
+
+// listOn merges `herdr agent list` (agent-bearing panes) with `herdr workspace list`
+// (nav labels + numbers) for one machine, keyed by workspace_id.
+func listOn(m Machine, timeout time.Duration) ([]Session, error) {
+	aOut, err := herdrOnT(timeout, m.ID, "agent", "list")
+	if err != nil {
+		return nil, err
+	}
+	var al agentListResp
+	if err := json.Unmarshal(aOut, &al); err != nil {
+		return nil, fmt.Errorf("parse agent list: %w", err)
+	}
+	if m.ID != "" {
+		cacheAgents(m.ID, al)
+	}
+
+	// Workspace labels/numbers (best-effort; UI still works without them).
+	labels := map[string]string{}
+	numbers := map[string]int{}
+	if wOut, err := herdrOnT(timeout, m.ID, "workspace", "list"); err == nil {
+		var wl workspaceListResp
+		if json.Unmarshal(wOut, &wl) == nil {
+			for _, w := range wl.Result.Workspaces {
+				labels[w.WorkspaceID] = w.Label
+				numbers[w.WorkspaceID] = w.Number
+			}
+		}
+	}
+
+	out := make([]Session, 0, len(al.Result.Agents))
+	for _, a := range al.Result.Agents {
+		cwd := a.ForegroundCwd
+		if cwd == "" {
+			cwd = a.Cwd
+		}
+		s := Session{
+			Machine:      m.ID,
+			MachineLabel: m.Label,
+			WorkspaceID:  a.WorkspaceID,
+			PaneID:       a.PaneID,
+			Label:        labels[a.WorkspaceID],
+			Name:         a.Name,
+			Agent:        a.Agent,
+			Status:       a.AgentStatus,
+			Cwd:          cwd,
+			Number:       numbers[a.WorkspaceID],
+			Focused:      a.Focused,
+		}
+		if s.Label == "" {
+			s.Label = a.Name
+		}
+		if s.Label == "" {
+			s.Label = filepath.Base(cwd)
+		}
+		out = append(out, s)
+	}
 	return out, nil
 }
 
 // ReadPane returns the visible screen text for a pane.
-func ReadPane(pane string, lines int) (string, error) {
+func ReadPane(machine, pane string, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 40
 	}
 	// --source recent pulls scrollback history (not just the visible screen), so the
 	// phone can scroll well past the current viewport; --format ansi keeps SGR colors.
-	out, err := run(herdrBin, "agent", "read", pane, "--source", "recent", "--lines", fmt.Sprint(lines), "--format", "ansi")
+	out, err := herdrOn(machine, "agent", "read", pane, "--source", "recent", "--lines", fmt.Sprint(lines), "--format", "ansi")
 	if err != nil {
 		return "", err
+	}
+	// herdr 0.9 prints the pane text raw; older servers wrapped it in a JSON envelope.
+	if !bytes.HasPrefix(bytes.TrimSpace(out), []byte(`{"id"`)) {
+		return string(out), nil
 	}
 	var r readResp
 	if err := json.Unmarshal(out, &r); err != nil {
@@ -191,16 +358,16 @@ func ReadPane(pane string, lines int) (string, error) {
 // Hermes' input reads that as a paste: the trailing Enter becomes a literal newline and
 // the prompt just sits in the composer unsent. For hermes, write the text and then send
 // Enter as its own key event - that is what actually submits.
-func SendPrompt(pane, text string) error {
-	if paneAgent(pane) == "hermes" {
-		if _, err := run(herdrBin, "pane", "send-text", pane, text); err != nil {
+func SendPrompt(machine, pane, text string) error {
+	if paneAgent(machine, pane) == "hermes" {
+		if _, err := herdrOn(machine, "pane", "send-text", pane, text); err != nil {
 			return err
 		}
 		time.Sleep(400 * time.Millisecond) // let the composer settle before the submit key
-		_, err := run(herdrBin, "pane", "send-keys", pane, "Enter")
+		_, err := herdrOn(machine, "pane", "send-keys", pane, "Enter")
 		return err
 	}
-	_, err := run(herdrBin, "pane", "run", pane, text)
+	_, err := herdrOn(machine, "pane", "run", pane, text)
 	return err
 }
 
@@ -211,21 +378,28 @@ func SendPrompt(pane, text string) error {
 // Cached briefly because a pane's agent doesn't change under a live session, and this
 // sits in front of every prompt send - one `agent list` per prompt would otherwise stack
 // on top of the two the list view already makes.
-var paneAgentCache = struct {
-	sync.Mutex
+//
+// Keyed per machine, since pane ids repeat across herdr servers.
+type agentCache struct {
 	at   time.Time
 	byID map[string]string
-}{}
+}
+
+var paneAgentCache = struct {
+	sync.Mutex
+	m map[string]agentCache
+}{m: map[string]agentCache{}}
 
 const paneAgentTTL = 30 * time.Second
 
-func paneAgent(pane string) string {
+func paneAgent(machine, pane string) string {
 	paneAgentCache.Lock()
-	defer paneAgentCache.Unlock()
-	if paneAgentCache.byID != nil && time.Since(paneAgentCache.at) < paneAgentTTL {
-		return paneAgentCache.byID[pane]
+	c, ok := paneAgentCache.m[machine]
+	paneAgentCache.Unlock()
+	if ok && time.Since(c.at) < paneAgentTTL {
+		return c.byID[pane]
 	}
-	out, err := run(herdrBin, "agent", "list")
+	out, err := herdrOn(machine, "agent", "list")
 	if err != nil {
 		return ""
 	}
@@ -233,12 +407,19 @@ func paneAgent(pane string) string {
 	if json.Unmarshal(out, &al) != nil {
 		return ""
 	}
+	return cacheAgents(machine, al)[pane]
+}
+
+// cacheAgents records a machine's pane -> agent map from an agent list we already have.
+func cacheAgents(machine string, al agentListResp) map[string]string {
 	byID := make(map[string]string, len(al.Result.Agents))
 	for _, a := range al.Result.Agents {
 		byID[a.PaneID] = a.Agent
 	}
-	paneAgentCache.at, paneAgentCache.byID = time.Now(), byID
-	return byID[pane]
+	paneAgentCache.Lock()
+	paneAgentCache.m[machine] = agentCache{at: time.Now(), byID: byID}
+	paneAgentCache.Unlock()
+	return byID
 }
 
 // SendKey sends a single verified control key to a pane.
@@ -253,11 +434,11 @@ var allowedKeys = map[string]bool{
 	"y": true, "n": true, "1": true, "2": true, "3": true, "4": true, "5": true,
 }
 
-func SendKey(pane, key string) error {
+func SendKey(machine, pane, key string) error {
 	if !allowedKeys[key] {
 		return fmt.Errorf("key not allowed: %q", key)
 	}
-	_, err := run(herdrBin, "pane", "send-keys", pane, key)
+	_, err := herdrOn(machine, "pane", "send-keys", pane, key)
 	return err
 }
 
@@ -266,26 +447,26 @@ func SendKey(pane, key string) error {
 // borders / the agents panel). herdr has no way to rename an agent's *internal*
 // session (Claude/Codex don't expose that), but this keeps all herdr surfaces
 // consistent instead of leaving the stale folder name on the pane border.
-func Rename(workspaceID, paneID, label string) error {
+func Rename(machine, workspaceID, paneID, label string) error {
 	label = strings.TrimSpace(label)
 	if err := validateLabel(label); err != nil {
 		return err
 	}
 	// Workspace label is the authoritative nav name; fail if it errors.
-	if _, err := run(herdrBin, "workspace", "rename", workspaceID, label); err != nil {
+	if _, err := herdrOn(machine, "workspace", "rename", workspaceID, label); err != nil {
 		return err
 	}
 	// Agent + pane labels are best-effort (a pane may have no live agent).
 	if paneID != "" {
-		_, _ = run(herdrBin, "agent", "rename", paneID, label)
-		_, _ = run(herdrBin, "pane", "rename", paneID, label)
+		_, _ = herdrOn(machine, "agent", "rename", paneID, label)
+		_, _ = herdrOn(machine, "pane", "rename", paneID, label)
 	}
 	return nil
 }
 
 // CloseWorkspace tears down a workspace (kills the session).
-func CloseWorkspace(workspaceID string) error {
-	_, err := run(herdrBin, "workspace", "close", workspaceID)
+func CloseWorkspace(machine, workspaceID string) error {
+	_, err := herdrOn(machine, "workspace", "close", workspaceID)
 	return err
 }
 
@@ -375,7 +556,11 @@ var reSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 // codex-only reasoning-effort override (ignored for claude). resumeID, when set,
 // resumes that existing session instead of starting fresh (model/effort are then the
 // session's own, so they aren't re-sent).
-func Spawn(dir, prompt, model, effort, agent, name, resumeID string, background bool) (string, error) {
+//
+// On a saved machine it runs that machine's own herd-spawn over ssh: herdr forwards API
+// calls but not helper scripts, and herd-spawn has to check the folder and resolve the
+// launcher on the box the agent will run on.
+func Spawn(m Machine, dir, prompt, model, effort, agent, name, resumeID string, background bool) (string, error) {
 	if agent == "" {
 		agent = "claude"
 	}
@@ -417,7 +602,16 @@ func Spawn(dir, prompt, model, effort, agent, name, resumeID string, background 
 	if prompt != "" {
 		args = append(args, prompt)
 	}
-	out, err := run(spawnBin, args...)
+	if m.ID == "" {
+		out, err := run(spawnBin, args...)
+		return strings.TrimSpace(string(out)), err
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellQuote(a)
+	}
+	// ssh's non-interactive shell skips ~/.profile, so name the binary by path.
+	out, err := sshRun(m, cliTimout, "~/.local/bin/herd-spawn "+strings.Join(quoted, " "))
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -457,6 +651,52 @@ func Folders() ([]string, error) {
 	}
 	sort.Strings(dirs)
 	return dirs, nil
+}
+
+// remoteFoldersSh prints the remote $HOME, then the same two-level folder listing Folders
+// builds locally (dotdirs pruned; the junk-name skip happens in Go), then one
+// "agent:<name>" line per agent CLI found, so the spawn form can flag a missing one.
+const remoteFoldersSh = `echo "$HOME"
+find "$HOME" -mindepth 1 -maxdepth 2 -name '.*' -prune -o -mindepth 1 -maxdepth 2 -type d -print 2>/dev/null
+for a in claude codex hermes; do
+  if [ -x "$HOME/.local/bin/$a" ] || command -v "$a" >/dev/null 2>&1; then echo "agent:$a"; fi
+done`
+
+// RemoteFolders lists spawn targets on a saved machine, plus its home dir (for ~ display)
+// and which agent CLIs it has.
+func RemoteFolders(m Machine) (dirs []string, home string, agents []string, err error) {
+	out, err := sshRun(m, 10*time.Second, remoteFoldersSh)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	skip := map[string]bool{
+		"node_modules": true, "vendor": true,
+		"AppData": true, "Android": true, "Downloads": true, "downloads": true,
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "/") {
+		return nil, "", nil, fmt.Errorf("unexpected folder listing from %s", m.Label)
+	}
+	home = lines[0]
+	for _, l := range lines[1:] {
+		switch {
+		case strings.HasPrefix(l, "agent:"):
+			agents = append(agents, strings.TrimPrefix(l, "agent:"))
+		case strings.HasPrefix(l, home+"/"):
+			rel := strings.Split(strings.TrimPrefix(l, home+"/"), "/")
+			bad := false
+			for _, part := range rel {
+				if skip[part] {
+					bad = true
+				}
+			}
+			if !bad {
+				dirs = append(dirs, l)
+			}
+		}
+	}
+	sort.Strings(dirs)
+	return dirs, home, agents, nil
 }
 
 // --- session history (resume) ---

@@ -49,6 +49,28 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
   `hermes --resume <id>`) in a fresh herdr workspace.
 
+## Remote machines
+
+herdr 0.9 can save SSH machines (`herdr machine add <ssh-host> --label "Shop PC"`).
+herd-remote picks up every **enabled** saved machine on its own - no config here.
+
+- **Session list** shows sessions from this box and every saved machine. A remote
+  session carries a yellow machine tag (local ones carry none). If a machine doesn't
+  answer within a few seconds its sessions are left out and a "unreachable" line says so,
+  so an offline machine never blanks the list.
+- **Detail view** works the same on a remote session: scrollback, keys, prompts, rename
+  and kill all go through `herdr --machine <id> ...`, over herdr's own SSH link.
+- **Spawn** gets a Local / <machine> picker once a machine is saved. Picking a machine
+  lists that machine's folders and launches with that machine's own `herd-spawn`. Both go
+  over plain `ssh <target>` (herdr doesn't forward helper scripts), so the machine needs
+  `~/.local/bin/herd-spawn` and an SSH key this box can use non-interactively. The Launch
+  button flags an agent CLI the machine doesn't appear to have.
+- **Resume** is local only: it reads this box's session files.
+
+Pane and workspace ids are per herdr server (both machines can have a `w2:p1`), so every
+session call carries `?machine=<id>`; the server only accepts ids of enabled saved
+machines.
+
 ## Hermes notes
 
 Hermes works like the other two, with a few differences worth knowing:
