@@ -432,6 +432,10 @@ var allowedKeys = map[string]bool{
 	// each key separately, so the agent sees ESC then a literal "[Z" rather than CSI Z.
 	"Tab": true, "Backspace": true, "Space": true,
 	"y": true, "n": true, "1": true, "2": true, "3": true, "4": true, "5": true,
+	// Codex 0.166 keys (each verified against herdr 0.9 send-keys): F2 opens the warnings
+	// panel, Ctrl+t the transcript pager, and q closes that pager. herdr spells control
+	// keys "Ctrl+t" here - "C-t" is rejected, unlike the legacy "C-c" above.
+	"F2": true, "Ctrl+t": true, "q": true,
 }
 
 func SendKey(machine, pane, key string) error {
@@ -707,7 +711,8 @@ func RemoteFolders(m Machine) (dirs []string, home string, agents []string, err 
 //           name = last "ai-title" record; cwd = from the transcript. (herdr's
 //           agent_session.value for a live claude pane equals this uuid.)
 //   codex:  ~/.codex/session_index.jsonl - a prebuilt {id, thread_name, updated_at}
-//           index. cwd isn't in it, so codex folder-filtering is best-effort.
+//           index of named (interactive) threads. cwd isn't in it, so it comes from
+//           the first line (session_meta) of the thread's rollout file.
 //   hermes: ~/.hermes/state.db - a SQLite session store (id, title, cwd, last_activity_at).
 //           Read through a python3 one-liner rather than a Go SQLite driver: this binary
 //           has no module dependencies and the store is WAL-mode, so a hand-rolled reader
@@ -718,7 +723,7 @@ type HistoryEntry struct {
 	Agent    string `json:"agent"`    // claude | codex | hermes
 	ID       string `json:"id"`       // resume target
 	Name     string `json:"name"`     // ai-title (claude) / thread_name (codex) / title (hermes)
-	Cwd      string `json:"cwd"`      // claude + hermes: authoritative; codex: usually ""
+	Cwd      string `json:"cwd"`      // folder the session ran in; "" if unknown
 	Modified int64  `json:"modified"` // unix seconds, for recency sort
 }
 
@@ -727,8 +732,7 @@ type HistoryEntry struct {
 const historyScanCap = 80
 
 // HistorySessions returns resumable past sessions from every agent, most-recent first.
-// filter, when set (case-insensitive), matches on cwd for claude/hermes and on name for
-// codex (codex has no cwd in its index). limit caps the returned list.
+// filter, when set (case-insensitive), matches on cwd or name. limit caps the returned list.
 func HistorySessions(filter string, limit int) []HistoryEntry {
 	if limit <= 0 {
 		limit = 60
@@ -738,11 +742,7 @@ func HistorySessions(filter string, limit int) []HistoryEntry {
 	if filter = strings.ToLower(strings.TrimSpace(filter)); filter != "" {
 		kept := all[:0]
 		for _, e := range all {
-			hay := e.Cwd
-			if e.Agent == "codex" {
-				hay = e.Name
-			}
-			if strings.Contains(strings.ToLower(hay), filter) {
+			if strings.Contains(strings.ToLower(e.Cwd+" "+e.Name), filter) {
 				kept = append(kept, e)
 			}
 		}
@@ -852,6 +852,9 @@ func codexHistory() []HistoryEntry {
 		return nil
 	}
 	defer f.Close()
+	// The index is append-only: a thread renamed or touched later gets a second line, so
+	// keep the last record per id.
+	byID := map[string]int{}
 	var out []HistoryEntry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
@@ -868,17 +871,92 @@ func codexHistory() []HistoryEntry {
 		if t, err := time.Parse(time.RFC3339, rec.UpdatedAt); err == nil {
 			mod = t.Unix()
 		}
-		out = append(out, HistoryEntry{
-			Agent: "codex", ID: rec.ID, Name: rec.ThreadName, Modified: mod,
-		})
+		e := HistoryEntry{Agent: "codex", ID: rec.ID, Name: rec.ThreadName, Modified: mod}
+		if i, ok := byID[rec.ID]; ok {
+			out[i] = e
+			continue
+		}
+		byID[rec.ID] = len(out)
+		out = append(out, e)
+	}
+	paths := codexRolloutPaths(filepath.Join(home, ".codex", "sessions"))
+	for i := range out {
+		p := paths[out[i].ID]
+		out[i].Cwd = codexCwd(out[i].ID, p)
+		// The index's updated_at is when the thread was named, not when it last ran, so a
+		// session that worked for a day after naming sorted as stale and fell off the list.
+		// The rollout file is appended every turn; its mtime is the real last activity.
+		if info, err := os.Stat(p); p != "" && err == nil && info.ModTime().Unix() > out[i].Modified {
+			out[i].Modified = info.ModTime().Unix()
+		}
 	}
 	return out
+}
+
+// codexRolloutPaths maps thread id -> rollout file under ~/.codex/sessions/YYYY/MM/DD/.
+// File names end in -<id>.jsonl, so this is a directory walk with no file reads.
+func codexRolloutPaths(root string) map[string]string {
+	paths := map[string]string{}
+	matches, _ := filepath.Glob(filepath.Join(root, "*", "*", "*", "rollout-*.jsonl"))
+	for _, p := range matches {
+		base := strings.TrimSuffix(filepath.Base(p), ".jsonl")
+		// rollout-2026-10-31T10-16-02-<uuid>: the id is the trailing 5 dash-groups.
+		parts := strings.Split(base, "-")
+		if len(parts) < 5 {
+			continue
+		}
+		paths[strings.Join(parts[len(parts)-5:], "-")] = p
+	}
+	return paths
+}
+
+// codexCwdCache holds each thread's starting folder. A thread's cwd never changes, so an
+// entry is good for the life of the process and each rollout header is read once.
+var codexCwdCache = struct {
+	sync.Mutex
+	m map[string]string
+}{m: map[string]string{}}
+
+// codexCwd reads the cwd from a rollout's first line (the session_meta record). That
+// line carries the full base instructions, so it can run to tens of KB.
+func codexCwd(id, path string) string {
+	codexCwdCache.Lock()
+	cwd, ok := codexCwdCache.m[id]
+	codexCwdCache.Unlock()
+	if ok || path == "" {
+		return cwd
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 64*1024)
+	line, err := r.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return ""
+	}
+	var meta struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Cwd string `json:"cwd"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(line, &meta) == nil && meta.Type == "session_meta" {
+		cwd = meta.Payload.Cwd
+	}
+	codexCwdCache.Lock()
+	codexCwdCache.m[id] = cwd
+	codexCwdCache.Unlock()
+	return cwd
 }
 
 // hermesStatePy dumps ~/.hermes/state.db's resumable sessions as JSON lines.
 //
 // Archived/hidden rows and empty shells are skipped, as is source "tool" (hermes' own
 // `sessions list` hides those too - they're subagent scratch, not something to resume).
+// Source "cron" is skipped too: scheduled jobs start ~100 sessions a day, which pushed
+// every Claude and Codex session out of the phone's 200-entry list.
 // The read is read-only; the temp-copy fallback covers the case where SQLite refuses a
 // read-only open because the WAL needs recovery and no hermes process is live to do it.
 const hermesStatePy = `
@@ -891,7 +969,7 @@ if not os.path.exists(db):
 Q = ("select id, coalesce(title, ''), coalesce(cwd, ''), "
      "coalesce(last_activity_at, started_at, 0) from sessions "
      "where coalesce(archived, 0) = 0 and coalesce(hidden, 0) = 0 "
-     "and coalesce(message_count, 0) > 0 and coalesce(source, '') != 'tool' "
+     "and coalesce(message_count, 0) > 0 and coalesce(source, '') not in ('tool', 'cron') "
      "order by 4 desc limit 200")
 
 def rows(path, readonly=True):

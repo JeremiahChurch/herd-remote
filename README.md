@@ -22,7 +22,8 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   - a **command / key picker** (dropdown) for less-common inputs (`/compact`, `/context`,
     `/usage`, `Space`, `Tab`, `Backspace`) so the button grid stays small. Its
     contents follow the agent: Hermes gets `/queue`, `/steer`, `/busy queue`,
-    `/compress`, and `/reasoning <level>` in place of the Claude/Codex set.
+    `/compress`, and `/reasoning <level>` in place of the Claude/Codex set. Codex gets
+    its own set too (see Codex notes).
   - a **Queue** button beside Send on Hermes sessions. It sends `/queue <your text>`,
     which hands Hermes the prompt for its next turn instead of interrupting the one
     already running - the phone equivalent of not talking over it.
@@ -44,10 +45,11 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   session and clears the form.
 - **Resume** - lists past sessions read straight from disk (Claude
   `~/.claude/projects/*/<uuid>.jsonl`, titled by the `ai-title` record; Codex
-  `~/.codex/session_index.jsonl`; Hermes `~/.hermes/state.db`), most-recent first,
+  `~/.codex/session_index.jsonl`, with folder and last activity from each thread's
+  rollout file; Hermes `~/.hermes/state.db`, minus cron runs), most-recent first,
   filterable by folder/name and by a **Claude / Codex / Hermes** segmented toggle. Tap
   one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
-  `hermes --resume <id>`) in a fresh herdr workspace.
+  `hermes --resume <id>`) in a fresh herdr workspace, in the folder the session ran in.
 
 ## Remote machines
 
@@ -87,6 +89,27 @@ Hermes works like the other two, with a few differences worth knowing:
   `send-keys Enter`, which is what actually submits.
 - Sessions launch in Hermes' classic REPL (its default without `--tui`): line-based
   output reads far better through the phone's scrollback than a full-screen TUI.
+
+## Codex notes
+
+Codex 0.166 changed three things that matter from a phone:
+
+- **Full-screen by default.** Its TUI now takes the alternate screen, so a herdr pane has
+  no scrollback, and the composer sits under ~40 blank rows. `herd-spawn` adds
+  `--no-alt-screen` to every Codex launch and resume, which restores the old inline layout
+  (set `HERD_CODEX_ALT_SCREEN=1` to opt out). A Codex you start by hand in herdr is still
+  full-screen unless you pass the flag yourself.
+- **Ctrl-C is a menu now.** Mid-turn it asks: `1` cancel the task, `2` leave it running in
+  the background and exit, `3` stop it and exit. At an idle prompt it exits at once.
+  `Esc` still interrupts in one tap. The phone's C-c toast spells this out.
+- **Padded composer.** The input box is shaded by padding each line to full width. The
+  scrollback view trims trailing padding, squeezes the footer's right-aligned gap, and
+  keeps at most one blank line in a row, so the box stays a few lines tall.
+
+The command picker for Codex has `/quit` (with a confirm), `/stop` and `/ps` for the
+background terminals an interrupted turn leaves running, `/status`, `/compact`, `/diff`,
+`/review`, `/recap`, `/usage`, `/clear`, `/model`, `/fast`, `/plan`, plus the keys `F2`
+(warnings), `Ctrl+T` (transcript pager) and `q` (close the pager).
 
 All control keys are validated against an allowlist server-side, so the HTTP surface
 can only send known-safe tokens to a pane.

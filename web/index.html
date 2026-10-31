@@ -269,7 +269,9 @@ let painted=false;
 const STATUSES=['idle','working','blocked','done','unknown'];
 const $=id=>document.getElementById(id);
 function show(view){for(const v of ['login','listView','detailView','spawnView','resumeView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
-function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1600);}
+let toastTimer=null;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),m.length>40?4000:1600);}
 function escHtml(s){return(s==null?'':String(s)).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
 
 // Every request carries an abort timeout. Without one, a fetch that a phone leaves
@@ -407,6 +409,24 @@ function ansiStrip(s){return(s||'')
 function collapseRules(s){return(s||'')
   .replace(/[─━┄┅┈┉╌╍═—―]{12,}/g,'─'.repeat(24))
   .replace(/[-_=]{24,}/g,m=>m[0].repeat(24));}
+// tidyScreen trims what a terminal pads but a phone shouldn't show. Codex 0.166 shades its
+// composer by padding every line to full terminal width (~140 spaces inside a background
+// color), and in full-screen mode it fills the space between output and composer with
+// blank rows. On a phone the padding wraps into screens of empty gray lines. So: drop
+// trailing spaces (and the color codes wrapped around them) on each line, shrink a gap of
+// 20+ spaces after text (the footer right-aligns its warning count) to 3, keep at most one
+// blank line in a row, and drop trailing blank lines. A reset replaces any stripped color
+// code so a style never bleeds into the next line.
+function tidyScreen(s){
+  const lines=(s||'').replace(/\r\n/g,'\n').replace(/\r/g,'').split('\n')
+    .map(l=>l.replace(/(?:[ \t\u00a0]|\x1b\[[0-9;:]*m)+$/,m=>m.includes('\x1b')?'\x1b[0m':'')
+      .replace(/(\S) {20,}/g,'$1   '));
+  const out=[];let blank=0;
+  for(const l of lines){
+    if(!ansiStrip(l).trim()){if(++blank>1)continue;}else blank=0;
+    out.push(l);}
+  while(out.length&&!ansiStrip(out[out.length-1]).trim())out.pop();
+  return out.join('\n');}
 // Copy mode: freeze the scrollback into a readonly textarea (native mobile selection),
 // pause polling so nothing moves under your finger. Toggle back to the live colored view.
 let copyReturnTop=0; // scrollback offset to restore when leaving copy mode
@@ -434,7 +454,7 @@ async function readScroll(force){
   try{
     const j=await api(sessURL(me,pane,'read',{lines:200}));
     if(!sameSess(cur,me))return; // navigated away mid-request
-    lastText=j.text||'';
+    lastText=tidyScreen(j.text||'');
     const box=$('dScroll'),atBottom=force||box.scrollHeight-box.scrollTop-box.clientHeight<40;
     $('scroll').innerHTML=lastText?ansiToHtml(collapseRules(lastText))
       :'<span style="color:var(--muted)">(pane has produced no output yet)</span>';
@@ -453,8 +473,13 @@ async function readScroll(force){
       $('scroll').textContent='read failed: '+e.message+'\n\nretrying…';
   }finally{reading=false;}
 }
+// Codex 0.166 no longer stops a turn on Ctrl-C: mid-turn it opens a menu (1 cancel task,
+// 2 leave it running in the background and exit, 3 stop it and exit), and at an idle prompt
+// it exits straight away. Esc still interrupts in one tap. The toast says so.
+const KEY_HINT={codex:{'C-c':'C-c · if busy: 1 cancel · 2 background · 3 exit (Esc just interrupts)'}};
 async function key(k){if(!cur)return;
-  try{await api(sessURL(cur,cur.pane_id,'key'),{method:'POST',body:JSON.stringify({key:k})});toast(k);setTimeout(readScroll,300);}
+  try{await api(sessURL(cur,cur.pane_id,'key'),{method:'POST',body:JSON.stringify({key:k})});
+    toast((KEY_HINT[cur.agent]||{})[k]||k);setTimeout(readScroll,300);}
   catch(e){toast(e.message);}}
 async function sendPrompt(){if(!cur)return;const t=$('prompt').value;if(!t.trim())return;
   try{await api(sessURL(cur,cur.pane_id,'prompt'),{method:'POST',body:JSON.stringify({text:t})});$('prompt').value='';toast('sent');setTimeout(readScroll,400);}
@@ -467,6 +492,10 @@ async function queuePrompt(){if(!cur)return;const t=$('prompt').value.trim();if(
     $('prompt').value='';toast('queued');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
 // /clear wipes the agent's context - destructive enough to gate behind a confirm, same as kill.
+// /quit ends a codex session the same way (it stays resumable), so it gets one too.
+async function quitSession(){if(!cur)return;if(!confirm('Send /quit? Codex exits; you can resume it later.'))return;
+  try{await api(sessURL(cur,cur.pane_id,'prompt'),{method:'POST',body:JSON.stringify({text:'/quit'})});toast('/quit');setTimeout(readScroll,400);}
+  catch(e){toast(e.message);}}
 async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipes the session context.'))return;
   try{await api(sessURL(cur,cur.pane_id,'prompt'),{method:'POST',body:JSON.stringify({text:'/clear'})});toast('/clear');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
@@ -479,6 +508,9 @@ async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipe
 // "Shift+Tab" nor a manual Escape,[,Z lands as the contiguous CSI Z that Claude Code
 // needs. It typed a literal "[Z" into the composer instead. Re-add once herdr can send
 // BackTab or raw bytes.
+// Codex 0.166 has no /context (/status covers it) and adds the ones that matter from a
+// phone: /quit, and /stop + /ps for the background terminals an interrupted turn leaves
+// running. Its keys: F2 opens the warnings panel, Ctrl+t the transcript pager (q closes).
 // Hermes names most of these differently (/compress, not /compact) and adds the two that
 // matter when it is mid-turn: /queue hands it a prompt for the next turn, /steer slips one
 // in after the current tool call. Neither interrupts, which is the whole point on a phone.
@@ -486,6 +518,11 @@ const CMD_MENU={
   slash:{
     default:[['/clear','/clear · wipes context'],['/compact','/compact'],
              ['/context','/context'],['/usage','/usage']],
+    codex:[['/quit','/quit · exit Codex'],['/stop','/stop · kill background terminals'],
+           ['/ps','/ps · list background terminals'],['/status','/status · context + config'],
+           ['/compact','/compact'],['/diff','/diff'],['/review','/review · review changes'],
+           ['/recap','/recap · summarize so far'],['/usage','/usage'],
+           ['/clear','/clear · new chat']],
     hermes:[['/queue','/queue · usage (or use the Queue button)'],
             ['/steer','/steer · nudge after the next tool call'],
             ['/busy queue','/busy queue · Enter queues while busy'],
@@ -496,12 +533,17 @@ const CMD_MENU={
     claude:[['/effort auto','auto · model default'],['/effort low','low'],
             ['/effort medium','medium'],['/effort high','high'],
             ['/effort xhigh','xhigh'],['/effort max','max']],
-    codex:[['/model','/model · pick model + effort']],
+    codex:[['/model','/model · pick model + effort'],['/fast','/fast · toggle 2x speed'],
+           ['/plan','/plan · Plan mode']],
     hermes:[['/reasoning low','low'],['/reasoning medium','medium'],
             ['/reasoning high','high'],['/reasoning xhigh','xhigh'],
             ['/reasoning max','max'],['/model','/model · switch model']],
   },
-  keys:[['Space','Space'],['Tab','Tab']],
+  keys:{
+    default:[['Space','Space'],['Tab','Tab']],
+    codex:[['Space','Space'],['Tab','Tab'],['F2','F2 · warnings'],
+           ['Ctrl+t','Ctrl+T · transcript'],['q','q · close transcript']],
+  },
 };
 // Rebuilt on every detail open: optgroup hiding is unreliable in mobile select pickers,
 // so the wrong agent's effort options are never emitted rather than merely hidden.
@@ -513,7 +555,7 @@ function renderCmdMenu(agent){
   $('cmdSel').innerHTML='<option value="">⌘ command / key…</option>'
     +grp('slash',CMD_MENU.slash[agent]||CMD_MENU.slash.default,'cmd')
     +grp('effort',eff,'cmd')
-    +grp('keys',CMD_MENU.keys,'key');
+    +grp('keys',CMD_MENU.keys[agent]||CMD_MENU.keys.default,'key');
 }
 // runCmd dispatches the command/key select: 'key' items reuse the allowlisted send-keys
 // path; 'cmd' items are typed as a slash-command prompt (text + Enter). Snaps back to the
@@ -524,6 +566,7 @@ async function runCmd(sel){
   if(!val||!cur)return;
   if(kind==='key')return key(val);
   if(val==='/clear')return clearSession();   // keeps the destructive-action confirm
+  if(val==='/quit')return quitSession();
   try{await api(sessURL(cur,cur.pane_id,'prompt'),{method:'POST',body:JSON.stringify({text:val})});
     toast(val);setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
@@ -680,7 +723,9 @@ function filterHistory(){
 }
 async function resumeSession(e){
   if(!confirm(`Resume ${e.agent}: ${e.name||e.id}?`))return;
-  const dir=e.cwd||'~'; // codex index has no cwd; '~' lets herd-spawn resolve HOME
+  // Resume in the session's own folder: a worktree session resumed from ~ runs its
+  // commands in the wrong place. '~' only if the store didn't record one.
+  const dir=e.cwd||'~';
   try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
     dir,agent:e.agent,name:e.name||'',resume:e.id,background:true})});
     toast('resuming…');
