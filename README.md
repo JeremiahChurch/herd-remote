@@ -232,3 +232,34 @@ export HERD_CODEX_CMD='codexd'    # your full-auto Codex wrapper
 
 These grant the agent full permissions in the spawned session by design - only spawn into
 folders you trust, same as running the CLI yourself.
+
+## Messages
+
+Open **Messages** in the session list header to watch herd-msg on this machine and
+all enabled saved herdr machines. The badge counts indeterminate and dead messages.
+A `+` means some machines could not be checked. The view polls every four seconds
+while visible and refreshes when the phone returns to the foreground.
+
+Use Queued, Held, Stuck or All to filter mail. Tap a row for its body, envelope,
+attempts and state history. Release held mail. Resend or drop stuck mail after
+confirmation. Resending an uncertain message may run it twice. The broker rejects
+stale resolve timestamps and changed unsent counts rather than acting on an old list.
+Clear an offline session after reviewing its unsent count; this drops unsent mail
+and removes the mailbox registration without closing the herdr pane. Live sessions
+can opt out or allow messages. Detached Codex sessions show their relaunch command.
+Stop all traffic and Resume apply to one machine and both ask for confirmation.
+Already accepted input cannot be recalled.
+
+Install herd-msg with `make install` in its checkout, or deploy it with
+`scripts/deploy.sh '<saved machine label>'` from its build machine. A missing binary,
+unreachable machine or unsupported status schema is shown beside that machine;
+other machines remain usable. Remote commands use saved SSH targets, batch
+authentication and a short timeout. The remote herd-msg path is discovered once per
+server process, with the fallback `$HOME/.local/bin/herd-msg`. Restart herd-remote
+after moving a remote binary. Messages uses the same password and login cookie as
+session controls. This view stores no mailbox settings; actions call herd-msg.
+
+After merging, run `deploy/restart.sh` from the clean main checkout used by the
+user service. It builds before replacing the binary, restarts `herd-remote.service`
+and checks that the unit is active. Set `GO` to a Go executable if needed. Development
+browser checks run a separate build on a spare port with a temporary config folder.

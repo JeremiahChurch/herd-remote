@@ -548,6 +548,8 @@ func main() {
 	mux.HandleFunc("/api/spawn", requireAuth(handleSpawn))
 	mux.HandleFunc("/api/models", requireAuth(handleModels))
 	mux.HandleFunc("/api/machines", requireAuth(handleMachines))
+	mux.HandleFunc("/api/messages", requireAuth(handleMessages))
+	mux.HandleFunc("/api/messages/", requireAuth(handleMessage))
 
 	srv := &http.Server{
 		Addr:         addr,
