@@ -3,8 +3,13 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
-if [[ "$(git branch --show-current)" != main ]] || ! git diff --quiet || ! git diff --cached --quiet; then
+if [[ "$(git branch --show-current)" != main ]] || [[ -n "$(git status --porcelain)" ]]; then
   echo 'Use a clean main checkout after merging the Messages change.' >&2
+  exit 1
+fi
+git fetch origin main
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  echo 'Update main to origin/main before restarting.' >&2
   exit 1
 fi
 stage="$(mktemp "$repo/.herd-remote-build.XXXXXX")"

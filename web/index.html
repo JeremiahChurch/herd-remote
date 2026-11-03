@@ -117,6 +117,7 @@
   .msgCounts,.msgWrap{overflow-wrap:anywhere;font-size:12px}
   .msgControls{display:flex;gap:8px;flex-wrap:wrap}
   .msgRow{width:100%;text-align:left}.msgRow .meta>span{display:block}
+  .msgRow .s{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
   .msgRow .badge{max-width:100px;overflow-wrap:anywhere;white-space:normal}
   .msgSession{border-top:1px solid var(--line);padding:8px 0}
   .msgPre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}
@@ -791,18 +792,25 @@ function messageBadge(rows){
   $('msgBadge').textContent=String(count)+(partial?'+':'');
   $('msgBadge').title=partial?'Some machines unavailable; count is incomplete':'Stuck messages';
 }
-async function refreshMessageBadge(){try{const j=await api('/api/messages');messageBadge(j.machines||[]);}catch(e){$('msgBadge').textContent='?';}}
+let messageBadgeBusy=false;
+async function refreshMessageBadge(){
+  if(messageBadgeBusy||document.visibilityState!=='visible'||$('listView').classList.contains('hidden'))return;
+  messageBadgeBusy=true;
+  try{const j=await api('/api/messages');if(!$('listView').classList.contains('hidden'))messageBadge(j.machines||[]);}
+  catch(e){$('msgBadge').textContent='?';}finally{messageBadgeBusy=false;}
+}
 async function refreshMessages(){
   if(messageBusy)return;
   const epoch=messageEpoch;messageBusy=true;
+  const detail=history.state?.view==='message'?loadMessageDetail(epoch):Promise.resolve();
   try{
     const j=await api('/api/messages');if(epoch!==messageEpoch)return;
     messageMachines=j.machines||[];messageStale=false;messageBadge(messageMachines);paintMessages();
-    if(history.state?.view==='message')await loadMessageDetail(epoch);
+
   }catch(e){if(epoch!==messageEpoch||e.message==='unauth')return;
     messageStale=true;paintMessages();$('msgNotice').textContent='List could not refresh: '+e.message;
-    if(history.state?.view==='message'){$('messageActions').replaceChildren();toast(e.message);}
-  }finally{if(epoch===messageEpoch)messageBusy=false;}
+    if(history.state?.view==='message'){$('messageError').textContent='List could not refresh: '+e.message;}
+  }finally{await detail;if(epoch===messageEpoch)messageBusy=false;}
 }
 function setMessageFilter(value){messageFilter=value;paintMessages();}
 function messageButton(label,action,danger=false){const b=document.createElement('button');b.textContent=label;
@@ -853,7 +861,7 @@ function paintMessages(){
 function paintMessageSession(section,machine,s,offline){
   const row=document.createElement('div');row.className='msgSession';section.appendChild(row);
   messageText(row,'p',`${s.name||s.id} · ${s.harness} · ${s.state}${s.blocked?' · blocked':''} · ${s.unsent} unsent${s.opted_out?' · opted out':''}`,'msgWrap');
-  if(s.state==='detached')messageText(row,'p','Relaunch with codex --remote unix:// or without -c. Mail waits.','machWarn');
+  if(s.state==='detached')messageText(row,'p',`Resume the pinned session with codex --remote unix:// resume ${s.id}. Mail waits.`,'machWarn msgWrap');
   if(offline)row.appendChild(messageButton('Clear',()=>{
     if(confirm(`Clear ${s.name||s.id} on ${machine.label}? Drop ${s.unsent} unsent messages. The herdr pane stays open.`))
       messageAct(machine.id,{action:'prune',id:s.id,unsent:s.unsent,confirm:true});
@@ -863,7 +871,7 @@ function paintMessageSession(section,machine,s,offline){
       messageAct(machine.id,{action:'allow',id:s.id,value:s.opted_out?'on':'off',confirm:true});
   }));
 }
-function renderMessageDetail(st){stopPoll();show('messageDetailView');$('messageBody').textContent='Loading…';
+function renderMessageDetail(st){stopPoll();show('messageDetailView');$('messageTitle').textContent='Message';$('messageError').textContent='';$('messageBody').textContent='Loading…';
   $('messageEnvelope').textContent='';$('messageAttempts').textContent='';$('messageHistory').textContent='';$('messageActions').replaceChildren();
   startMessagePoll();}
 async function loadMessageDetail(epoch){
@@ -885,16 +893,19 @@ async function loadMessageDetail(epoch){
         if(confirm('Drop this message? It will no longer be delivered.'))messageAct(st.machine,{action:'resolve',id:m.id,value:'drop',updated:m.updated,confirm:true});
       },true));
     }
+    for(const button of actions.children)button.disabled=false;
   }catch(e){if(epoch!==messageEpoch||e.message==='unauth')return;
     toast(e.message);$('messageActions').replaceChildren();
     if(e.status===404){
-      toast('Message is gone. Refreshing the list.');history.replaceState({view:'messages'},'');renderMessages();
-    }else{$('messageError').textContent='Could not refresh: '+e.message;}
+      toast('Message is gone. Refreshing the list.');history.back();
+    }else{$('messageError').textContent='Could not refresh: '+e.message;if($('messageBody').textContent==='Loading…')$('messageBody').textContent='Could not load message.';}
   }
 }
 async function messageAct(machine,body){
   stopMessagePoll();messageStale=true;paintMessages();for(const b of $('messageActions').children)b.disabled=true;
-  try{await api(messageURL(machine,'action'),{method:'POST',body:JSON.stringify(body)});toast('Updated');}
+  try{const result=await api(messageURL(machine,'action'),{method:'POST',body:JSON.stringify(body)});
+    toast(result.already_injected?'Already accepted; message was not resent.':
+      body.action==='kill'&&body.value==='on'&&result.in_flight?`Traffic stopped; ${result.in_flight} deliveries already in flight.`:'Updated');}
   catch(e){if(e.message!=='unauth')toast(e.message);}
   finally{if(['messages','message'].includes(history.state?.view)&&$('login').classList.contains('hidden'))startMessagePoll();}
 }
@@ -921,7 +932,7 @@ async function boot(){
   try{const j=await api('/api/sessions');history.replaceState({view:'list'},'');
     show('listView');renderCards(j.sessions||[],j.machines||[]);refreshMessageBadge();
     if(refreshLoop)clearInterval(refreshLoop);
-    refreshLoop=setInterval(()=>{if(!$('listView').classList.contains('hidden'))refresh();},4000);
+    refreshLoop=setInterval(()=>{if(document.visibilityState==='visible'&&!$('listView').classList.contains('hidden'))refresh();},4000);
   }catch(e){if(e.message==='unauth')show('login');}
 }
 boot();

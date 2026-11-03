@@ -77,7 +77,7 @@ var messagePaths sync.Map // SSH target to successful path lookup, for this proc
 // messageExec uses argv locally. Only SSH's remote command is a shell string.
 func messageExec(ctx context.Context, bin string, args ...string) ([]byte, error) {
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, errors.New("machine unreachable or command timed out")
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -98,9 +98,12 @@ func messageExec(ctx context.Context, bin string, args ...string) ([]byte, error
 	select {
 	case err = <-done:
 	case <-ctx.Done():
-		// Include descendants holding stdout open, and keep Go 1.18 compatibility.
+		// Kill the child group; a detached descendant must not extend the deadline.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond):
+		}
 		return nil, errors.New("machine unreachable or command timed out")
 	}
 	out := stdout.Bytes()
@@ -167,12 +170,18 @@ func messageSnapshot(ctx context.Context, m Machine) (*MessageStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	var header struct {
+		Schema int `json:"schema"`
+	}
+	if err := json.Unmarshal(out, &header); err != nil {
+		return nil, errors.New("invalid herd-msg status response")
+	}
+	if header.Schema != 1 {
+		return nil, fmt.Errorf("unsupported status schema %d; upgrade herd-remote", header.Schema)
+	}
 	var status MessageStatus
 	if err := json.Unmarshal(out, &status); err != nil {
 		return nil, errors.New("invalid herd-msg status response")
-	}
-	if status.Schema != 1 {
-		return nil, fmt.Errorf("unsupported status schema %d; upgrade herd-remote", status.Schema)
 	}
 	return &status, nil
 }
@@ -193,6 +202,9 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	machines := append([]Machine{{Label: "This machine"}}, Machines()...)
+	machinesCache.Lock()
+	discoveryError := machinesCache.err
+	machinesCache.Unlock()
 	rows := make([]MessageMachine, len(machines))
 	var wg sync.WaitGroup
 	for i, m := range machines {
@@ -216,6 +228,9 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		}(i, m)
 	}
 	wg.Wait()
+	if discoveryError != "" {
+		rows = append(rows, MessageMachine{ID: "discovery", Label: "Saved machines", Problem: "unavailable", Error: discoveryError})
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"machines": rows})
 }
 

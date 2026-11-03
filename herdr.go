@@ -85,6 +85,7 @@ var machinesCache = struct {
 	sync.Mutex
 	at   time.Time
 	list []Machine
+	err  string
 }{}
 
 // Machines lists enabled saved machines. Cached briefly: it is a local config read, but
@@ -96,6 +97,7 @@ func Machines() []Machine {
 		return machinesCache.list
 	}
 	list := []Machine{}
+	machinesCache.err = ""
 	if out, err := run(herdrBin, "machine", "list", "--json"); err == nil {
 		var raw []struct {
 			ID      string `json:"id"`
@@ -109,7 +111,11 @@ func Machines() []Machine {
 					list = append(list, Machine{ID: m.ID, Label: m.Label, Target: m.Target})
 				}
 			}
+		} else {
+			machinesCache.err = "Could not read saved machines; refresh after checking herdr."
 		}
+	} else {
+		machinesCache.err = "Could not list saved machines: " + err.Error()
 	}
 	machinesCache.at, machinesCache.list = time.Now(), list
 	return list

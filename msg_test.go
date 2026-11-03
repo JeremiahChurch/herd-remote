@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -62,12 +64,14 @@ esac
 	t.Setenv("CODEX_THREAD_ID", "agent-thread")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "agent-conversation")
 	machinesCache.Lock()
+	machinesCache.err = ""
 	machinesCache.list = nil
 	machinesCache.at = time.Time{}
 	machinesCache.Unlock()
 	messagePaths = sync.Map{}
 	t.Cleanup(func() {
 		machinesCache.Lock()
+		machinesCache.err = ""
 		machinesCache.list = nil
 		machinesCache.at = time.Time{}
 		machinesCache.Unlock()
@@ -254,17 +258,40 @@ func TestMessageMissingBinaryUpgradeAndTimeout(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "invalid remote") {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(root, "bin/herd-msg"), []byte("#!/bin/sh\necho '{\"schema\":2}'\n"), 0700)
+	os.WriteFile(filepath.Join(root, "bin/herd-msg"), []byte("#!/bin/sh\necho '{\"schema\":2,\"counts\":[]}'\n"), 0700)
 	_, err = messageSnapshot(context.Background(), Machine{})
 	if err == nil || messageProblem(err) != "upgrade" {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(root, "bin/herd-msg"), []byte("#!/bin/sh\nsleep 5 &\nwait\n"), 0700)
+	os.WriteFile(filepath.Join(root, "bin/herd-msg"), []byte("#!/bin/sh\nsetsid sleep 5 &\necho $! > \"$FAKE_ROOT/escaped-pid\"\nwait\n"), 0700)
+	t.Cleanup(func() {
+		b, _ := os.ReadFile(filepath.Join(root, "escaped-pid"))
+		if pid, e := strconv.Atoi(strings.TrimSpace(string(b))); e == nil {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err = messageSnapshot(ctx, Machine{})
 	if err == nil || time.Since(start) > time.Second {
 		t.Fatal("timeout failed", err, time.Since(start))
+	}
+}
+
+func TestMessagesReportMachineDiscoveryFailure(t *testing.T) {
+	root := fakeMessages(t)
+	if err := os.WriteFile(filepath.Join(root, "bin/herdr"), []byte("#!/bin/sh\necho 'machine registry unavailable' >&2\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	w := messageRequest(t, "GET", "/api/messages", "", true)
+	var result struct {
+		Machines []MessageMachine `json:"machines"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Machines) != 2 || result.Machines[0].Status == nil || result.Machines[1].ID != "discovery" || !strings.Contains(result.Machines[1].Error, "registry unavailable") {
+		t.Fatal(w.Body)
 	}
 }
