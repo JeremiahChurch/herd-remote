@@ -1,2 +1,4 @@
 herd-remote
 *.log
+
+.claude/
