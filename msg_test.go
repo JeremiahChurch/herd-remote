@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,14 +65,12 @@ esac
 	t.Setenv("CODEX_THREAD_ID", "agent-thread")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "agent-conversation")
 	machinesCache.Lock()
-	machinesCache.err = ""
 	machinesCache.list = nil
 	machinesCache.at = time.Time{}
 	machinesCache.Unlock()
 	messagePaths = sync.Map{}
 	t.Cleanup(func() {
 		machinesCache.Lock()
-		machinesCache.err = ""
 		machinesCache.list = nil
 		machinesCache.at = time.Time{}
 		machinesCache.Unlock()
@@ -272,10 +271,18 @@ func TestMessageMissingBinaryUpgradeAndTimeout(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
+	workers := runtime.NumGoroutine()
+	fds, _ := os.ReadDir("/proc/self/fd")
 	start := time.Now()
 	_, err = messageSnapshot(ctx, Machine{})
 	if err == nil || time.Since(start) > time.Second {
 		t.Fatal("timeout failed", err, time.Since(start))
+	}
+	if after := runtime.NumGoroutine(); after > workers+1 {
+		t.Fatalf("timeout retained workers: before %d, after %d", workers, after)
+	}
+	if after, _ := os.ReadDir("/proc/self/fd"); len(after) > len(fds) {
+		t.Fatalf("timeout retained pipes: before %d, after %d", len(fds), len(after))
 	}
 }
 
@@ -293,5 +300,33 @@ func TestMessagesReportMachineDiscoveryFailure(t *testing.T) {
 	}
 	if len(result.Machines) != 2 || result.Machines[0].Status == nil || result.Machines[1].ID != "discovery" || !strings.Contains(result.Machines[1].Error, "registry unavailable") {
 		t.Fatal(w.Body)
+	}
+}
+
+func TestMessagesKeepLocalMailWhenDiscoveryHangs(t *testing.T) {
+	root := fakeMessages(t)
+	if err := os.WriteFile(filepath.Join(root, "bin/herdr"), []byte("#!/bin/sh\nexec sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	w := messageRequest(t, "GET", "/api/messages", "", true)
+	if time.Since(start) > 3*time.Second {
+		t.Fatal("discovery exhausted the phone timeout", time.Since(start))
+	}
+	var result struct {
+		Machines []MessageMachine `json:"machines"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Machines) != 2 || result.Machines[0].Status == nil || len(result.Machines[0].Status.Pending) != 1 || !strings.Contains(result.Machines[1].Error, "timed out") {
+		t.Fatal(w.Body)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	_, err := savedMessageMachines(ctx)
+	if err == nil || time.Since(start) > time.Second {
+		t.Fatal("discovery ignored caller deadline", err, time.Since(start))
 	}
 }

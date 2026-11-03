@@ -19,6 +19,7 @@ import (
 )
 
 const messageTimeout = 6 * time.Second
+const messageDiscoveryTimeout = 2 * time.Second
 
 var reMessageID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 var reMessagePath = regexp.MustCompile(`^/[A-Za-z0-9_./@+ -]+$`)
@@ -87,23 +88,39 @@ func messageExec(ctx context.Context, bin string, args ...string) ([]byte, error
 			cmd.Env = append(cmd.Env, env)
 		}
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stdoutR.Close()
+	defer stdoutW.Close()
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stderrR.Close()
+	defer stderrW.Close()
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	stdoutW.Close()
+	stderrW.Close()
+	var stdout, stderr bytes.Buffer
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() { defer readers.Done(); _, _ = io.Copy(&stdout, stdoutR) }()
+	go func() { defer readers.Done(); _, _ = io.Copy(&stderr, stderrR) }()
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	var err error
+	go func() { err := cmd.Wait(); readers.Wait(); done <- err }()
 	select {
 	case err = <-done:
 	case <-ctx.Done():
-		// Kill the child group; a detached descendant must not extend the deadline.
+		// Closing our pipe ends also releases readers held open by detached children.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		select {
-		case <-done:
-		case <-time.After(200 * time.Millisecond):
-		}
+		stdoutR.Close()
+		stderrR.Close()
+		<-done
 		return nil, errors.New("machine unreachable or command timed out")
 	}
 	out := stdout.Bytes()
@@ -197,14 +214,54 @@ func messageProblem(err error) string {
 	return "unavailable"
 }
 
+// Discovery gets its own short deadline, independent of the session-list cache.
+func savedMessageMachines(parent context.Context) ([]Machine, error) {
+	ctx, cancel := context.WithTimeout(parent, messageDiscoveryTimeout)
+	defer cancel()
+	out, err := messageExec(ctx, herdrBin, "machine", "list", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("could not list saved machines: %w", err)
+	}
+	var raw []struct {
+		ID      string `json:"id"`
+		Label   string `json:"label"`
+		Target  string `json:"target"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, errors.New("could not read saved machines; check herdr")
+	}
+	machines := []Machine{}
+	for _, m := range raw {
+		if m.Enabled && reMachineID.MatchString(m.ID) {
+			machines = append(machines, Machine{ID: m.ID, Label: m.Label, Target: m.Target})
+		}
+	}
+	return machines, nil
+}
+
+func lookupMessageMachine(ctx context.Context, id string) (Machine, error) {
+	if id == "" {
+		return Machine{}, nil
+	}
+	machines, err := savedMessageMachines(ctx)
+	if err != nil {
+		return Machine{}, err
+	}
+	for _, m := range machines {
+		if m.ID == id {
+			return m, nil
+		}
+	}
+	return Machine{}, fmt.Errorf("unknown machine: %q", id)
+}
+
 func handleMessages(w http.ResponseWriter, r *http.Request) {
 	if !methodGuard(w, r, http.MethodGet) {
 		return
 	}
-	machines := append([]Machine{{Label: "This machine"}}, Machines()...)
-	machinesCache.Lock()
-	discoveryError := machinesCache.err
-	machinesCache.Unlock()
+	saved, discoveryError := savedMessageMachines(r.Context())
+	machines := append([]Machine{{Label: "This machine"}}, saved...)
 	rows := make([]MessageMachine, len(machines))
 	var wg sync.WaitGroup
 	for i, m := range machines {
@@ -228,8 +285,8 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		}(i, m)
 	}
 	wg.Wait()
-	if discoveryError != "" {
-		rows = append(rows, MessageMachine{ID: "discovery", Label: "Saved machines", Problem: "unavailable", Error: discoveryError})
+	if discoveryError != nil {
+		rows = append(rows, MessageMachine{ID: "discovery", Label: "Saved machines", Problem: "unavailable", Error: discoveryError.Error()})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"machines": rows})
 }
@@ -296,7 +353,7 @@ func handleMessage(w http.ResponseWriter, r *http.Request) {
 	if machine == "local" {
 		machine = ""
 	}
-	m, err := lookupMachine(machine)
+	m, err := lookupMessageMachine(r.Context(), machine)
 	if err != nil {
 		apiError(w, 400, err.Error())
 		return
