@@ -108,6 +108,19 @@
   .toast.show{opacity:1}
   .center{max-width:360px;margin:16vh auto 0;padding:0 20px;text-align:center}
   .center input{width:100%;text-align:center;font-size:18px;margin:16px 0}
+  #listView header{flex-wrap:wrap;gap:6px}
+  #listView header h1{flex:1 1 100%}
+  #listView header .sp{display:none}
+  #listView header button{font-size:13px;padding:9px 10px}
+  .msgMachine{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}
+  .msgMachine h2{font-size:17px}.msgMachine h3{font-size:15px}
+  .msgCounts,.msgWrap{overflow-wrap:anywhere;font-size:12px}
+  .msgControls{display:flex;gap:8px;flex-wrap:wrap}
+  .msgRow{width:100%;text-align:left}.msgRow .meta>span{display:block}
+  .msgRow .badge{max-width:100px;overflow-wrap:anywhere;white-space:normal}
+  .msgSession{border-top:1px solid var(--line);padding:8px 0}
+  .msgPre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}
+  button:disabled{opacity:.5;cursor:default}
   .spawnRow{display:flex;gap:8px}
   .spawnRow button{flex:1}
 </style>
@@ -127,6 +140,7 @@
 <div id="listView" class="view hidden">
   <header>
     <h1>Sessions</h1><span class="sp"></span>
+    <button onclick="showMessages()">Messages <span id="msgBadge" class="badge">?</span></button>
     <button onclick="showResume()">↩ Resume</button>
     <button onclick="showSpawn()">＋ Spawn</button>
     <button onclick="refresh()">↻</button>
@@ -259,6 +273,31 @@
   <div class="scrollwrap"><div class="wrap" id="histCards"></div></div>
 </div>
 
+<!-- MESSAGES -->
+<div id="messagesView" class="view hidden">
+  <header><button onclick="backToList()" aria-label="Back to sessions">‹</button><h1>Messages</h1><span class="sp"></span>
+    <button onclick="refreshMessages()" aria-label="Refresh messages">↻</button></header>
+  <div class="seg">
+    <button id="mf-queued" class="on" onclick="setMessageFilter('queued')">Queued</button>
+    <button id="mf-held" onclick="setMessageFilter('held')">Held</button>
+    <button id="mf-stuck" onclick="setMessageFilter('stuck')">Stuck</button>
+    <button id="mf-all" onclick="setMessageFilter('all')">All</button>
+  </div>
+  <div class="scrollwrap"><div class="wrap"><p id="msgNotice" class="machWarn" role="status"></p><div id="msgCards"></div></div></div>
+</div>
+<div id="messageDetailView" class="view hidden">
+  <header><button onclick="history.back()" aria-label="Back to messages">‹</button><h1 id="messageTitle">Message</h1><span class="sp"></span>
+    <button onclick="refreshMessages()" aria-label="Refresh message">↻</button></header>
+  <div class="scrollwrap"><div class="wrap">
+    <p id="messageError" class="machWarn msgWrap" role="status"></p>
+    <h2>Body</h2><pre id="messageBody" class="msgPre"></pre>
+    <h2>Envelope</h2><pre id="messageEnvelope" class="msgPre"></pre>
+    <h2>Attempts</h2><pre id="messageAttempts" class="msgPre"></pre>
+    <h2>State history</h2><pre id="messageHistory" class="msgPre"></pre>
+  </div></div>
+  <div id="messageActions" class="controls msgControls"></div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script>
@@ -268,7 +307,7 @@ let cur=null, folders=[], pollTimer=null, refreshLoop=null, reading=false, copyM
 let painted=false;
 const STATUSES=['idle','working','blocked','done','unknown'];
 const $=id=>document.getElementById(id);
-function show(view){for(const v of ['login','listView','detailView','spawnView','resumeView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
+function show(view){if(!['messagesView','messageDetailView'].includes(view))stopMessagePoll();for(const v of ['login','listView','detailView','spawnView','resumeView','messagesView','messageDetailView'])$(v).classList.add('hidden');$(view).classList.remove('hidden');}
 let toastTimer=null;
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');
   clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),m.length>40?4000:1600);}
@@ -285,7 +324,7 @@ async function api(path,opts){
     const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'},signal:ac.signal},opts||{}));
     if(r.status===401){stopPoll();cur=null;show('login');throw new Error('unauth');}
     const j=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(j.error||('http '+r.status));
+    if(!r.ok){const e=new Error(j.error||('http '+r.status));e.status=r.status;throw e;}
     return j;
   }catch(e){
     if(e.name==='AbortError')throw new Error('request timed out');
@@ -349,7 +388,7 @@ async function doLogin(){
 $('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 
 // ---------- list ----------
-async function refresh(){try{const j=await api('/api/sessions');renderCards(j.sessions||[],j.machines||[]);}catch(e){if(e.message!=='unauth'&&!/failed to fetch/i.test(e.message))toast(e.message);}}
+async function refresh(){refreshMessageBadge();try{const j=await api('/api/sessions');renderCards(j.sessions||[],j.machines||[]);}catch(e){if(e.message!=='unauth'&&!/failed to fetch/i.test(e.message))toast(e.message);}}
 function renderCards(sessions,machines){
   const c=$('cards');c.innerHTML='';
   // A machine that didn't answer is named, not silently dropped, so "no Shop PC sessions"
@@ -380,6 +419,8 @@ function applyState(st){
   if(st.view==='detail'&&st.s){renderDetail(st.s);return;}
   if(st.view==='spawn'){renderSpawn();return;}
   if(st.view==='resume'){renderResume();return;}
+  if(st.view==='messages'){renderMessages();return;}
+  if(st.view==='message'){renderMessageDetail(st);return;}
   stopPoll();show('listView');refresh();
 }
 window.addEventListener('popstate',e=>applyState(e.state));
@@ -736,6 +777,128 @@ async function resumeSession(e){
     }else{setTimeout(backToList,800);}
   }catch(err){toast(err.message);}}
 
+// ---------- messages ----------
+let messageMachines=[],messageFilter='queued',messageTimer=null,messageEpoch=0,messageBusy=false,messageStale=false;
+const messageURL=(machine,id)=>`/api/messages/${encodeURIComponent(machine)}/${encodeURIComponent(id)}`;
+function stopMessagePoll(){clearInterval(messageTimer);messageTimer=null;messageEpoch++;messageBusy=false;}
+function showMessages(){navTo({view:'messages'});}
+function renderMessages(){stopPoll();show('messagesView');startMessagePoll();}
+function startMessagePoll(){stopMessagePoll();refreshMessages();messageTimer=setInterval(()=>{
+  if(document.visibilityState==='visible')refreshMessages();},4000);}
+function messageBadge(rows){
+  const count=rows.reduce((n,m)=>n+(m.status?(m.status.counts.indeterminate||0)+(m.status.counts.dead||0):0),0);
+  const partial=rows.some(m=>m.error);
+  $('msgBadge').textContent=String(count)+(partial?'+':'');
+  $('msgBadge').title=partial?'Some machines unavailable; count is incomplete':'Stuck messages';
+}
+async function refreshMessageBadge(){try{const j=await api('/api/messages');messageBadge(j.machines||[]);}catch(e){$('msgBadge').textContent='?';}}
+async function refreshMessages(){
+  if(messageBusy)return;
+  const epoch=messageEpoch;messageBusy=true;
+  try{
+    const j=await api('/api/messages');if(epoch!==messageEpoch)return;
+    messageMachines=j.machines||[];messageStale=false;messageBadge(messageMachines);paintMessages();
+    if(history.state?.view==='message')await loadMessageDetail(epoch);
+  }catch(e){if(epoch!==messageEpoch||e.message==='unauth')return;
+    messageStale=true;paintMessages();$('msgNotice').textContent='List could not refresh: '+e.message;
+    if(history.state?.view==='message'){$('messageActions').replaceChildren();toast(e.message);}
+  }finally{if(epoch===messageEpoch)messageBusy=false;}
+}
+function setMessageFilter(value){messageFilter=value;paintMessages();}
+function messageButton(label,action,danger=false){const b=document.createElement('button');b.textContent=label;
+  if(danger)b.className='danger';b.disabled=messageStale;b.onclick=action;return b;}
+function messageText(parent,tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;parent.appendChild(e);return e;}
+function paintMessages(){
+  const c=$('msgCards');c.replaceChildren();$('msgNotice').textContent=messageStale?'List is stale. Refresh before using controls.':'';
+  for(const v of ['queued','held','stuck','all'])$('mf-'+v).classList.toggle('on',v===messageFilter);
+  for(const machine of messageMachines){
+    const section=document.createElement('section');section.className='msgMachine';c.appendChild(section);
+    messageText(section,'h2',machine.label);
+    if(machine.error){
+      messageText(section,'p',machine.problem==='not_installed'?'herd-msg not installed':machine.problem==='upgrade'?'Upgrade herd-remote':'Offline / unavailable','machWarn');
+      messageText(section,'p',machine.error,'msgWrap');
+      if(machine.problem==='not_installed')messageText(section,'p','Install: make install in the herd-msg checkout, or scripts/deploy.sh "<saved machine label>" from the build machine.','msgWrap');
+      continue;
+    }
+    const s=machine.status;
+    messageText(section,'p',s.killed?'Traffic stopped':'Traffic running',s.killed?'danger':'');
+    const controls=document.createElement('div');controls.className='msgControls';section.appendChild(controls);
+    controls.appendChild(messageButton(s.killed?'Resume':'Stop all traffic',()=>{
+      if(confirm(`${s.killed?'Resume':'Stop all'} traffic on ${machine.label}?${s.killed?' Queued mail can run.':''}`))
+        messageAct(machine.id,{action:'kill',value:s.killed?'off':'on',confirm:true});
+    },!s.killed));
+    messageText(section,'p',Object.entries(s.counts||{}).map(([state,n])=>`${state}: ${n}`).join(' · '),'msgCounts');
+    for(const h of s.health||[])messageText(section,'p',`${h.check}: ${h.detail}${h.fix?' - '+h.fix:''}`,'machWarn msgWrap');
+    const rows=[...(s.pending||[]),...(messageFilter==='all'?(s.recent||[]):[])].filter(m=>
+      messageFilter==='all'||(messageFilter==='stuck'?['indeterminate','dead'].includes(m.state):
+      messageFilter==='queued'?['queued','claimed','injecting','outbox'].includes(m.state):m.state==='held'));
+    if(!rows.length)messageText(section,'div','No messages','empty');
+    for(const row of rows){
+      const b=document.createElement('button');b.className='card msgRow';b.disabled=messageStale;
+      b.onclick=()=>navTo({view:'message',machine:machine.id,id:row.id});
+      b.innerHTML=`<span class="age">${escHtml(agoShort(Date.parse(row.created)/1000))}</span>
+        <span class="meta"><span class="t">${escHtml(row.first_line||'(empty body)')}</span>
+        <span class="s">${escHtml(row.from)} to ${escHtml(row.to)}</span>
+        <span class="s">${escHtml(row.created)}${row.error?' · '+escHtml(row.error):''}</span></span>
+        <span class="badge">${escHtml(row.state)}</span>`;
+      section.appendChild(b);
+    }
+    const sessions=s.sessions||[];
+    if(sessions.length){messageText(section,'h3','Sessions');
+      for(const session of sessions.filter(s=>!['offline','dead'].includes(s.state)))paintMessageSession(section,machine,session,false);}
+    const offline=sessions.filter(s=>['offline','dead'].includes(s.state));
+    if(offline.length){messageText(section,'h3','Offline sessions');for(const session of offline)paintMessageSession(section,machine,session,true);}
+  }
+}
+function paintMessageSession(section,machine,s,offline){
+  const row=document.createElement('div');row.className='msgSession';section.appendChild(row);
+  messageText(row,'p',`${s.name||s.id} · ${s.harness} · ${s.state}${s.blocked?' · blocked':''} · ${s.unsent} unsent${s.opted_out?' · opted out':''}`,'msgWrap');
+  if(s.state==='detached')messageText(row,'p','Relaunch with codex --remote unix:// or without -c. Mail waits.','machWarn');
+  if(offline)row.appendChild(messageButton('Clear',()=>{
+    if(confirm(`Clear ${s.name||s.id} on ${machine.label}? Drop ${s.unsent} unsent messages. The herdr pane stays open.`))
+      messageAct(machine.id,{action:'prune',id:s.id,unsent:s.unsent,confirm:true});
+  },true));
+  else row.appendChild(messageButton(s.opted_out?'Allow messages':'Opt out',()=>{
+    if(confirm(`${s.opted_out?'Allow messages for':'Stop messages to'} ${s.name||s.id}?`))
+      messageAct(machine.id,{action:'allow',id:s.id,value:s.opted_out?'on':'off',confirm:true});
+  }));
+}
+function renderMessageDetail(st){stopPoll();show('messageDetailView');$('messageBody').textContent='Loading…';
+  $('messageEnvelope').textContent='';$('messageAttempts').textContent='';$('messageHistory').textContent='';$('messageActions').replaceChildren();
+  startMessagePoll();}
+async function loadMessageDetail(epoch){
+  const st=history.state;if(st?.view!=='message')return;
+  try{
+    const m=await api(messageURL(st.machine,st.id));if(epoch!==messageEpoch)return;
+    $('messageTitle').textContent=m.state||'Message';$('messageBody').textContent=m.body||'';
+    $('messageEnvelope').textContent=m.envelope||`From: ${m.sender}\nTo: ${m.recipient}@${m.destination}\nID: ${m.id}\nOrigin: ${m.origin}\nHop: ${m.hop}\nCreated: ${m.created}`;
+    $('messageAttempts').textContent=JSON.stringify(m.attempts||[],null,2);
+    $('messageHistory').textContent=JSON.stringify(m.history||[],null,2);
+    $('messageError').textContent=m.error||'';
+    const actions=$('messageActions');actions.replaceChildren();
+    if(m.state==='held')actions.appendChild(messageButton('Release',()=>messageAct(st.machine,{action:'release',id:m.id})));
+    if(['indeterminate','dead'].includes(m.state)){
+      actions.appendChild(messageButton('Resend',()=>{
+        if(confirm('Resend this message? It may run twice.'))messageAct(st.machine,{action:'resolve',id:m.id,value:'resend',updated:m.updated,confirm:true});
+      }));
+      actions.appendChild(messageButton('Drop',()=>{
+        if(confirm('Drop this message? It will no longer be delivered.'))messageAct(st.machine,{action:'resolve',id:m.id,value:'drop',updated:m.updated,confirm:true});
+      },true));
+    }
+  }catch(e){if(epoch!==messageEpoch||e.message==='unauth')return;
+    toast(e.message);$('messageActions').replaceChildren();
+    if(e.status===404){
+      toast('Message is gone. Refreshing the list.');history.replaceState({view:'messages'},'');renderMessages();
+    }else{$('messageError').textContent='Could not refresh: '+e.message;}
+  }
+}
+async function messageAct(machine,body){
+  stopMessagePoll();messageStale=true;paintMessages();for(const b of $('messageActions').children)b.disabled=true;
+  try{await api(messageURL(machine,'action'),{method:'POST',body:JSON.stringify(body)});toast('Updated');}
+  catch(e){if(e.message!=='unauth')toast(e.message);}
+  finally{if(['messages','message'].includes(history.state?.view)&&$('login').classList.contains('hidden'))startMessagePoll();}
+}
+
 // ---------- wake refresh: re-fetch the current view whenever the page returns to the foreground ----------
 // Mobile browsers freeze timers on a backgrounded tab, so on resume the screen is stale and the
 // first queued fetch can fail. Re-pull the active view's data the moment the page is visible again.
@@ -747,6 +910,7 @@ function refreshCurrentView(){
   if(!$('listView').classList.contains('hidden'))refresh();
   else if(!$('detailView').classList.contains('hidden'))readScroll();
   else if(!$('resumeView').classList.contains('hidden'))renderResume();
+  else if(!$('messagesView').classList.contains('hidden')||!$('messageDetailView').classList.contains('hidden')){startMessagePoll();}
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshCurrentView();});
 window.addEventListener('pageshow',refreshCurrentView);
@@ -755,7 +919,7 @@ window.addEventListener('focus',refreshCurrentView);
 // ---------- boot ----------
 async function boot(){
   try{const j=await api('/api/sessions');history.replaceState({view:'list'},'');
-    show('listView');renderCards(j.sessions||[],j.machines||[]);
+    show('listView');renderCards(j.sessions||[],j.machines||[]);refreshMessageBadge();
     if(refreshLoop)clearInterval(refreshLoop);
     refreshLoop=setInterval(()=>{if(!$('listView').classList.contains('hidden'))refresh();},4000);
   }catch(e){if(e.message==='unauth')show('login');}

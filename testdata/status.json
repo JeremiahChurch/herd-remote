@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "machine": "local",
+  "version": "test",
+  "killed": false,
+  "counts": {"outbox":0,"held":0,"queued":1,"claimed":0,"injecting":0,"indeterminate":0,"dead":0,"sent":0,"injected":1,"dropped":0},
+  "sessions": [{"id":"receiver","name":"reviewer","harness":"claude","state":"live","pane":"","last_seen":"","opted_out":false,"unsent":1,"blocked":true}],
+  "links": [{"machine":"peer","auto_run":false,"mode":"","reachable":false,"last_contact":"","error":""}],
+  "pending": [{"id":"pending","from":"builder.codex@local","to":"receiver@local","state":"queued","created":"2030-01-01T00:00:00Z","updated":"2030-01-01T00:00:00Z","first_line":"hello","attempts":0,"error":"recipient blocked"}],
+  "recent": [{"id":"accepted","from":"builder.codex@local","to":"receiver@local","state":"injected","created":"2030-01-01T00:00:00Z","updated":"2030-01-01T00:00:00Z","first_line":"accepted body","attempts":1,"error":""}],
+  "health": [{"check":"driver","detail":"probe passed","since":"2030-01-01T00:00:00Z","fix":""}]
+}
