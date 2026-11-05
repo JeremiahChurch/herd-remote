@@ -835,6 +835,13 @@ async function resumeSession(e){
 // family: green delivered, amber waiting, red failed.
 let messageMachines=[],messageTimer=null,messageEpoch=0,messageBusy=false,messageStale=false;
 const messageMore=new Set(); // machine ids whose Recent list is expanded
+// Folds (health, sessions) that are open, by "<machine>:<kind>". The list repaints every
+// four seconds, so without this an opened fold would snap shut under your finger.
+const messageFolds=new Set();
+function messageFold(parent,key,summary){
+  const d=document.createElement('details');d.className='msgFold';d.open=messageFolds.has(key);
+  d.ontoggle=()=>{d.open?messageFolds.add(key):messageFolds.delete(key);};
+  messageText(d,'summary',summary);parent.appendChild(d);return d;}
 const RECENT_SHOWN=25;
 const MSG_TONE={sent:'ok',injected:'ok',queued:'wait',held:'wait',outbox:'wait',claimed:'wait',
   injecting:'wait',dropped:'fail',dead:'fail',indeterminate:'fail'};
@@ -944,8 +951,7 @@ function paintMessages(){
     for(const row of attnRows)paintMessageRow(section,machine,row,names,true);
     for(const x of waitingSessions)paintMessageSession(section,machine,x);
     if(health.length){
-      const d=document.createElement('details');d.className='msgFold';section.appendChild(d);
-      messageText(d,'summary',`⚠ ${health.length} health warning${health.length>1?'s':''}`);
+      const d=messageFold(section,machine.id+':health',`⚠ ${health.length} health warning${health.length>1?'s':''}`);
       for(const h of health)messageText(d,'p',`${h.check}: ${h.detail}${h.fix?' - '+h.fix:''}`,'machWarn msgWrap');
     }
 
@@ -965,8 +971,7 @@ function paintMessages(){
     const rest=sessions.filter(x=>!(x.unsent>0||x.blocked));
     if(rest.length){
       const live=rest.filter(x=>!['offline','dead'].includes(x.state)).length;
-      const d=document.createElement('details');d.className='msgFold';section.appendChild(d);
-      messageText(d,'summary',`Sessions: ${live} live, ${rest.length-live} offline`);
+      const d=messageFold(section,machine.id+':sessions',`Sessions: ${live} live, ${rest.length-live} offline`);
       for(const x of rest)paintMessageSession(d,machine,x);
     }
   }
