@@ -240,14 +240,15 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions, "machines": machines})
 }
 
-// handleModels serves the Codex model list read live from codex's own cache. Claude
+// handleModels serves the Codex and Muse model lists, read live from each agent's own
+// cache. Claude
 // needs no endpoint: its dropdown uses Claude Code's aliases (opus, sonnet, ...),
 // which always resolve to the newest model of that family.
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	if !methodGuard(w, r, http.MethodGet) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"codex": CodexModels()})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"codex": CodexModels(), "muse": MuseModels()})
 }
 
 // machineParam resolves the ?machine= query param ("" = this box), writing a 400 and

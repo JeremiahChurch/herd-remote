@@ -30,11 +30,13 @@
   .btn-accent{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
   .btn-codex{background:#8957e5;color:#fff;border-color:transparent;font-weight:600}
   .btn-hermes{background:#0f9b8e;color:#fff;border-color:transparent;font-weight:600}
+  .btn-muse{background:#c0367a;color:#fff;border-color:transparent;font-weight:600}
   .seg{display:flex;gap:6px;padding:8px 12px 0}
   .seg button{flex:1;padding:7px 0;font-size:13px}
   .seg button.on{background:var(--accent);color:#04121f;border-color:transparent;font-weight:600}
   .seg button.on.codex{background:#8957e5;color:#fff}
   .seg button.on.hermes{background:#0f9b8e;color:#fff}
+  .seg button.on.muse{background:#c0367a;color:#fff}
   /* each top-level view is a full-height flex column */
   .view{position:absolute;inset:0;display:flex;flex-direction:column}
   /* .hidden must be generic: #scrollText (the copy-mode textarea) carries it too, and
@@ -108,18 +110,47 @@
   .toast.show{opacity:1}
   .center{max-width:360px;margin:16vh auto 0;padding:0 20px;text-align:center}
   .center input{width:100%;text-align:center;font-size:18px;margin:16px 0}
-  #listView header{flex-wrap:wrap;gap:6px}
-  #listView header h1{flex:1 1 100%}
+  /* sessions list: title and every control share one line, controls right-aligned */
+  #listView header{gap:6px;padding-left:12px;padding-right:12px}
+  #listView header h1{flex:1 1 auto;min-width:0}
   #listView header .sp{display:none}
-  #listView header button{font-size:13px;padding:9px 10px}
-  .msgMachine{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}
-  .msgMachine h2{font-size:17px}.msgMachine h3{font-size:15px}
-  .msgCounts,.msgWrap{overflow-wrap:anywhere;font-size:12px}
+  #listView header button{flex:none;font-size:13px;padding:8px 8px;white-space:nowrap}
+  #msgBadge{font-size:10px;padding:1px 5px;margin-left:4px;letter-spacing:0;vertical-align:1px}
+  #msgBadge.hot{color:#fff;background:var(--blocked);border-color:var(--blocked)}
+  /* messages: one tone per state family so a row reads at a glance */
+  .tone-ok{--tone:var(--idle)} .tone-wait{--tone:var(--unknown)} .tone-fail{--tone:var(--blocked)}
+  .tone-other{--tone:var(--muted)}
+  .msgLegend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin:0 2px 10px}
+  .msgLegend span::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;
+    background:var(--tone);margin-right:5px;vertical-align:1px}
+  .msgMachine{margin-bottom:22px}
+  .mhead{display:flex;align-items:center;gap:8px;margin:0 2px 8px}
+  .mhead h2{font-size:16px;margin:0;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mhead button{flex:none;font-size:12px;padding:6px 9px;border-radius:8px}
+  .msum{font-size:12px;color:var(--muted);margin:0 2px 10px}
+  .msum b{color:var(--tone);font-weight:600}
+  .msec{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:14px 2px 6px}
+  .mnone{font-size:13px;color:var(--muted);margin:0 2px 6px}
+  .mrow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;font-size:13px;
+    background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--tone);
+    border-radius:10px;padding:7px 10px;margin-bottom:6px}
+  .mrow .mt{flex:1;min-width:0}
+  .mrow .who,.mrow .txt{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mrow .who{font-size:12px;color:var(--muted)}
+  .mrow .who b{color:var(--fg);font-weight:600}
+  .mrow .txt{margin-top:1px}
+  .mrow .why{font-size:12px;color:var(--tone);margin-top:2px;overflow-wrap:anywhere}
+  .mrow .when{flex:none;align-self:flex-start;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .mrow.sess{cursor:default}
+  .mrow.sess .txt{color:var(--muted);font-size:12px}
+  .mrow.sess button{flex:none;font-size:12px;padding:5px 8px;border-radius:8px}
+  .msgFold{margin:6px 2px}
+  .msgFold summary{cursor:pointer;color:var(--muted);font-size:13px;padding:6px 0}
+  .msgFold[open] summary{margin-bottom:6px}
+  .mmore{width:100%;font-size:13px;padding:8px;color:var(--muted)}
+  .msgWrap{overflow-wrap:anywhere;font-size:12px}
   .msgControls{display:flex;gap:8px;flex-wrap:wrap}
-  .msgRow{width:100%;text-align:left}.msgRow .meta>span{display:block}
-  .msgRow .s{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
-  .msgRow .badge{max-width:100px;overflow-wrap:anywhere;white-space:normal}
-  .msgSession{border-top:1px solid var(--line);padding:8px 0}
+  #messageTitle{color:var(--tone,var(--fg))}
   .msgPre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}
   button:disabled{opacity:.5;cursor:default}
   .spawnRow{display:flex;gap:8px}
@@ -141,10 +172,10 @@
 <div id="listView" class="view hidden">
   <header>
     <h1>Sessions</h1><span class="sp"></span>
-    <button onclick="showMessages()">Messages <span id="msgBadge" class="badge">?</span></button>
+    <button onclick="showMessages()" aria-label="Messages" title="Messages">✉<span id="msgBadge" class="badge">?</span></button>
     <button onclick="showResume()">↩ Resume</button>
     <button onclick="showSpawn()">＋ Spawn</button>
-    <button onclick="refresh()">↻</button>
+    <button onclick="refresh()" aria-label="Refresh sessions">↻</button>
   </header>
   <div class="scrollwrap"><div class="wrap" id="cards"></div></div>
 </div>
@@ -219,14 +250,14 @@
     <label class="fld">Session name (optional; labels the herdr window + this list)</label>
     <input id="spawnName" class="list-input" placeholder="e.g. failing-simplemdm-test"
       autocapitalize="off" autocomplete="off" spellcheck="false">
-    <label class="fld">Folder — pick below, or type any path (even hidden, e.g. ~/.ssh)</label>
+    <label class="fld">Folder - pick below, or type any path (even hidden, e.g. ~/.ssh)</label>
     <input id="folderFilter" class="list-input" placeholder="type a path or filter…"
       oninput="renderFolders()" autocapitalize="off" autocomplete="off" spellcheck="false">
     <select id="folder" class="list-input" size="8" style="height:auto"
       onchange="$('folderFilter').value=this.options[this.selectedIndex].textContent"></select>
     <label class="fld">First prompt (optional)</label>
     <textarea id="spawnPrompt" class="list-input" rows="3" placeholder="what should it do?"></textarea>
-    <label class="fld">Model (picks the agent too — Claude, then Codex, then Hermes)</label>
+    <label class="fld">Model (picks the agent too - Claude, Codex, Hermes, Muse)</label>
     <select id="spawnModel" class="list-input" onchange="updateLaunchBtn()">
       <optgroup label="Claude">
         <!-- Claude Code aliases: each always resolves to the newest model in that family,
@@ -244,6 +275,10 @@
         <!-- No model/effort: hermes reads both from ~/.hermes/config.yaml, and changes
              them in-session with /model and /reasoning. One entry, nothing to drift. -->
         <option data-agent="hermes" data-model="">Hermes</option>
+      </optgroup>
+      <optgroup label="Muse" id="museGroup">
+        <!-- Rebuilt from /api/models (Muse's own model catalog) by loadModels(). -->
+        <option data-agent="muse" data-model="">Muse · default</option>
       </optgroup>
     </select>
     <div id="effortRow" class="hidden">
@@ -267,6 +302,7 @@
     <button id="haClaude" onclick="setHistAgent('claude')">Claude</button>
     <button id="haCodex" onclick="setHistAgent('codex')">Codex</button>
     <button id="haHermes" onclick="setHistAgent('hermes')">Hermes</button>
+    <button id="haMuse" onclick="setHistAgent('muse')">Muse</button>
   </div>
   <div style="padding:10px 12px 0"><input id="histFilter" class="list-input" style="margin:0"
     placeholder="filter by folder or name…" oninput="filterHistory()"
@@ -278,13 +314,9 @@
 <div id="messagesView" class="view hidden">
   <header><button onclick="backToList()" aria-label="Back to sessions">‹</button><h1>Messages</h1><span class="sp"></span>
     <button onclick="refreshMessages()" aria-label="Refresh messages">↻</button></header>
-  <div class="seg">
-    <button id="mf-queued" class="on" onclick="setMessageFilter('queued')">Queued</button>
-    <button id="mf-held" onclick="setMessageFilter('held')">Held</button>
-    <button id="mf-stuck" onclick="setMessageFilter('stuck')">Stuck</button>
-    <button id="mf-all" onclick="setMessageFilter('all')">All</button>
-  </div>
-  <div class="scrollwrap"><div class="wrap"><p id="msgNotice" class="machWarn" role="status"></p><div id="msgCards"></div></div></div>
+  <div class="scrollwrap"><div class="wrap"><p id="msgNotice" class="machWarn" role="status"></p>
+    <div class="msgLegend"><span class="tone-ok">delivered</span><span class="tone-wait">waiting</span><span class="tone-fail">failed</span></div>
+    <div id="msgCards"></div></div></div>
 </div>
 <div id="messageDetailView" class="view hidden">
   <header><button onclick="history.back()" aria-label="Back to messages">‹</button><h1 id="messageTitle">Message</h1><span class="sp"></span>
@@ -402,7 +434,7 @@ function renderCards(sessions,machines){
     const st=STATUSES.includes(s.status)?s.status:'unknown';
     const pid=s.pane_id?`<span class="pid">${escHtml(s.pane_id)}</span>`:'';
     d.innerHTML=`<span class="dot ${st}"></span>
-      <div class="meta"><div class="t">${escHtml(s.label||s.name||'—')} ${pid}</div>
+      <div class="meta"><div class="t">${escHtml(s.label||s.name||'-')} ${pid}</div>
       <div class="s">${escHtml(shortCwd(s.cwd))}</div></div>
       <div style="text-align:right"><div class="agentTag">${machTag(s)}${escHtml(s.agent||'')}</div>
       <div class="badge st-${st}">${escHtml(s.status||'?')}</div></div>`;
@@ -535,7 +567,8 @@ async function queuePrompt(){if(!cur)return;const t=$('prompt').value.trim();if(
   catch(e){toast(e.message);}}
 // /clear wipes the agent's context - destructive enough to gate behind a confirm, same as kill.
 // /quit ends a codex session the same way (it stays resumable), so it gets one too.
-async function quitSession(){if(!cur)return;if(!confirm('Send /quit? Codex exits; you can resume it later.'))return;
+async function quitSession(){if(!cur)return;const who=cur.agent==='muse'?'Muse':'Codex';
+  if(!confirm(`Send /quit? ${who} exits; you can resume it later.`))return;
   try{await api(sessURL(cur,cur.pane_id,'prompt'),{method:'POST',body:JSON.stringify({text:'/quit'})});toast('/quit');setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
 async function clearSession(){if(!cur)return;if(!confirm('Send /clear? This wipes the session context.'))return;
@@ -570,6 +603,10 @@ const CMD_MENU={
             ['/busy queue','/busy queue · Enter queues while busy'],
             ['/clear','/clear · new session'],['/compress','/compress · compact context'],
             ['/status','/status'],['/context','/context'],['/usage','/usage']],
+    // Muse 1.4.14's own names (checked in its / menu). /quit waits until Muse is idle.
+    muse:[['/clear','/clear · new session'],['/compact','/compact'],['/status','/status'],
+          ['/usage','/usage · usage + context'],['/stop','/stop · stop background tasks'],
+          ['/questions','/questions · answer pending questions'],['/quit','/quit · exit when idle']],
   },
   effort:{
     claude:[['/effort auto','auto · model default'],['/effort low','low'],
@@ -580,6 +617,8 @@ const CMD_MENU={
     hermes:[['/reasoning low','low'],['/reasoning medium','medium'],
             ['/reasoning high','high'],['/reasoning xhigh','xhigh'],
             ['/reasoning max','max'],['/model','/model · switch model']],
+    muse:[['/effort low','low'],['/effort medium','medium'],['/effort high','high'],
+          ['/effort xhigh','xhigh'],['/effort max','max'],['/model','/model · switch model']],
   },
   keys:{
     default:[['Space','Space'],['Tab','Tab']],
@@ -657,31 +696,43 @@ function renderFolders(){
 function selModel(){const s=$('spawnModel');return s.options[s.selectedIndex];}
 // loadModels rebuilds the Codex group from codex's own model cache, so new Codex models
 // show up without a herd-remote release. The selection survives the rebuild by slug.
-let codexModels=[];
+// Muse's group is rebuilt the same way from Muse's own model catalog.
+let agentModels={codex:[],muse:[]};
+const MODEL_GROUPS={codex:['codexGroup','Codex · config default','Codex · '],
+  muse:['museGroup','Muse · default','Muse · ']};
 async function loadModels(){
-  try{const j=await api('/api/models');codexModels=j.codex||[];}catch(e){return;}
-  const prev=selModel(),keep=prev&&prev.dataset.agent==='codex'?prev.dataset.model:null;
-  const g=$('codexGroup');g.innerHTML='';
-  const add=(slug,label)=>{const o=document.createElement('option');
-    o.dataset.agent='codex';o.dataset.model=slug;o.textContent=label;g.appendChild(o);
-    if(keep!==null&&slug===keep)o.selected=true;};
-  add('','Codex · config default');
-  for(const m of codexModels)add(m.slug,'Codex · '+m.name);
+  let j;try{j=await api('/api/models');}catch(e){return;}
+  const prev=selModel();
+  for(const [agent,[gid,blank,prefix]] of Object.entries(MODEL_GROUPS)){
+    agentModels[agent]=j[agent]||[];
+    const keep=prev&&prev.dataset.agent===agent?prev.dataset.model:null;
+    const g=$(gid);g.innerHTML='';
+    const add=(slug,label)=>{const o=document.createElement('option');
+      o.dataset.agent=agent;o.dataset.model=slug;o.textContent=label;g.appendChild(o);
+      if(keep!==null&&slug===keep)o.selected=true;};
+    add('',blank);
+    for(const m of agentModels[agent])add(m.slug,prefix+m.name);
+  }
   updateLaunchBtn();}
-// renderEffort shows the effort picker for Codex only, offering the picked model's own
-// levels. Blank means codex's config.toml default. The previous choice sticks if valid.
+// renderEffort shows the effort picker for Codex and Muse, offering the picked model's own
+// levels. Blank means the agent's own default (codex config.toml, Muse settings). The
+// previous choice sticks if valid.
+const EFFORT_AGENTS={codex:'config default',muse:'Muse default'};
 function renderEffort(){const o=selModel(),row=$('effortRow'),sel=$('spawnEffort');
-  if(!o||o.dataset.agent!=='codex'){row.classList.add('hidden');return;}
+  const agent=o&&o.dataset.agent;
+  if(!EFFORT_AGENTS[agent]){row.classList.add('hidden');return;}
   row.classList.remove('hidden');
-  const m=codexModels.find(x=>x.slug===o.dataset.model);
-  const levels=m?m.efforts:['low','medium','high','xhigh'];
-  const prev=sel.value;sel.innerHTML='<option value="">config default</option>'
+  const m=(agentModels[agent]||[]).find(x=>x.slug===o.dataset.model);
+  // A known model offers only its own allowed levels (maybe none, leaving just the
+  // default); the generic list is only for a model the catalog didn't describe.
+  const levels=m?(m.efforts||[]):['low','medium','high','xhigh','max'];
+  const prev=sel.value;sel.innerHTML=`<option value="">${EFFORT_AGENTS[agent]}</option>`
     +levels.map(l=>`<option value="${l}">${l}</option>`).join('');
   if(levels.includes(prev))sel.value=prev;}
-function selEffort(){const o=selModel();return o&&o.dataset.agent==='codex'?$('spawnEffort').value:'';}
+function selEffort(){const o=selModel();return o&&EFFORT_AGENTS[o.dataset.agent]?$('spawnEffort').value:'';}
 // updateLaunchBtn reflects the picked model on the single Launch button: its label and
-// its tint (blue Claude, purple Codex, teal Hermes) so the agent reads at a glance.
-const AGENT_BTN={codex:'btn-codex',hermes:'btn-hermes'};
+// its tint (blue Claude, purple Codex, teal Hermes, pink Muse) so the agent reads at a glance.
+const AGENT_BTN={codex:'btn-codex',hermes:'btn-hermes',muse:'btn-muse'};
 function updateLaunchBtn(){const o=selModel();if(!o)return;const b=$('launchBtn');
   renderEffort();const eff=selEffort();
   const where=spawnMachine?' on '+machineLabel(spawnMachine):'';
@@ -721,15 +772,14 @@ async function doSpawn(){
 }
 
 // ---------- resume (past sessions from disk) ----------
-// Tag tints match the launch-button colours: purple Codex, teal Hermes, default Claude.
-const AGENT_TAG_TINT={codex:'#bc8cff',hermes:'#5fd4c4'};
+// Tag tints match the launch-button colours: purple Codex, teal Hermes, pink Muse, default Claude.
+const AGENT_TAG_TINT={codex:'#bc8cff',hermes:'#5fd4c4',muse:'#f778ba'};
 let histList=[],histAgent='all';
 function showResume(){navTo({view:'resume'});}
 function setHistAgent(a){histAgent=a;
-  for(const [id,val] of [['haAll','all'],['haClaude','claude'],['haCodex','codex'],['haHermes','hermes']]){
+  for(const [id,val] of [['haAll','all'],['haClaude','claude'],['haCodex','codex'],['haHermes','hermes'],['haMuse','muse']]){
     const b=$(id);b.classList.toggle('on',val===a);
-    b.classList.toggle('codex',val==='codex'&&val===a);
-    b.classList.toggle('hermes',val==='hermes'&&val===a);}
+    for(const tint of ['codex','hermes','muse'])b.classList.toggle(tint,val===tint&&val===a);}
   filterHistory();}
 async function renderResume(){stopPoll();show('resumeView');
   $('histCards').innerHTML='<div class="empty">loading…</div>';
@@ -768,18 +818,36 @@ async function resumeSession(e){
   // Resume in the session's own folder: a worktree session resumed from ~ runs its
   // commands in the wrong place. '~' only if the store didn't record one.
   const dir=e.cwd||'~';
+  // A Muse entry reads "session-name: title"; the short session name makes the better label.
+  const name=e.agent==='muse'?(e.name||'').split(': ')[0]:(e.name||'');
   try{const j=await api('/api/spawn',{method:'POST',body:JSON.stringify({
-    dir,agent:e.agent,name:e.name||'',resume:e.id,background:true})});
+    dir,agent:e.agent,name,resume:e.id,background:true})});
     toast('resuming…');
     if(j.pane_id){ // jump into the resumed session
       const s={workspace_id:j.workspace_id,pane_id:j.pane_id,agent:e.agent,
-        label:e.name||e.id,name:'',status:'working',cwd:dir};
+        label:name||e.id,name:'',status:'working',cwd:dir};
       history.replaceState({view:'detail',s},'');renderDetail(s);
     }else{setTimeout(backToList,800);}
   }catch(err){toast(err.message);}}
 
 // ---------- messages ----------
-let messageMachines=[],messageFilter='queued',messageTimer=null,messageEpoch=0,messageBusy=false,messageStale=false;
+// Layout: per machine, a one-line header (name + traffic control), a coloured count line,
+// then "Needs attention" (anything waiting, failed with an action, or a session holding
+// unsent mail) and a compact "Recent" history, newest first. Rows are tinted by state
+// family: green delivered, amber waiting, red failed.
+let messageMachines=[],messageTimer=null,messageEpoch=0,messageBusy=false,messageStale=false;
+const messageMore=new Set(); // machine ids whose Recent list is expanded
+// Folds (health, sessions) that are open, by "<machine>:<kind>". The list repaints every
+// four seconds, so without this an opened fold would snap shut under your finger.
+const messageFolds=new Set();
+function messageFold(parent,key,summary){
+  const d=document.createElement('details');d.className='msgFold';d.open=messageFolds.has(key);
+  d.ontoggle=()=>{d.open?messageFolds.add(key):messageFolds.delete(key);};
+  messageText(d,'summary',summary);parent.appendChild(d);return d;}
+const RECENT_SHOWN=25;
+const MSG_TONE={sent:'ok',injected:'ok',queued:'wait',held:'wait',outbox:'wait',claimed:'wait',
+  injecting:'wait',dropped:'fail',dead:'fail',indeterminate:'fail'};
+const msgTone=state=>MSG_TONE[state]||'other';
 const messageURL=(machine,id)=>`/api/messages/${encodeURIComponent(machine)}/${encodeURIComponent(id)}`;
 function stopMessagePoll(){clearInterval(messageTimer);messageTimer=null;messageEpoch++;messageBusy=false;}
 function showMessages(){navTo({view:'messages'});}
@@ -790,6 +858,7 @@ function messageBadge(rows){
   const count=rows.reduce((n,m)=>n+(m.status?(m.status.counts.indeterminate||0)+(m.status.counts.dead||0):0),0);
   const partial=rows.some(m=>m.error);
   $('msgBadge').textContent=String(count)+(partial?'+':'');
+  $('msgBadge').classList.toggle('hot',count>0);
   $('msgBadge').title=partial?'Some machines unavailable; count is incomplete':'Stuck messages';
 }
 let messageBadgeBusy=false;
@@ -797,7 +866,7 @@ async function refreshMessageBadge(){
   if(messageBadgeBusy||document.visibilityState!=='visible'||$('listView').classList.contains('hidden'))return;
   messageBadgeBusy=true;
   try{const j=await api('/api/messages');if(!$('listView').classList.contains('hidden'))messageBadge(j.machines||[]);}
-  catch(e){$('msgBadge').textContent='?';}finally{messageBadgeBusy=false;}
+  catch(e){$('msgBadge').textContent='?';$('msgBadge').classList.remove('hot');}finally{messageBadgeBusy=false;}
 }
 async function refreshMessages(){
   if(messageBusy)return;
@@ -812,16 +881,44 @@ async function refreshMessages(){
     if(history.state?.view==='message'){$('messageError').textContent='List could not refresh: '+e.message;}
   }finally{await detail;if(epoch===messageEpoch)messageBusy=false;}
 }
-function setMessageFilter(value){messageFilter=value;paintMessages();}
 function messageButton(label,action,danger=false){const b=document.createElement('button');b.textContent=label;
   if(danger)b.className='danger';b.disabled=messageStale;b.onclick=action;return b;}
 function messageText(parent,tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;parent.appendChild(e);return e;}
+// msgAddr shortens a herd-msg address for a one-line row. "name.harness@host" shows as the
+// name; a session uuid shows as that session's name when this machine knows it, else its
+// first 8 characters. The host is kept apart so a row only shows it for cross-machine mail.
+function msgAddr(addr,names){
+  addr=addr||'';const at=addr.lastIndexOf('@');
+  let who=at>0?addr.slice(0,at):addr;const host=at>0?addr.slice(at+1):'';
+  if(names[who])who=names[who];
+  else{const m=who.match(/^(.+)\.(claude|codex|hermes|muse)$/);if(m)who=m[1];}
+  if(/^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(who))who=who.slice(0,8);
+  return{who:who||'?',host};}
+function msgWho(row,names){
+  const f=msgAddr(row.from,names),t=msgAddr(row.to,names),cross=f.host&&t.host&&f.host!==t.host;
+  const side=a=>`<b>${escHtml(a.who)}</b>`+(cross?'@'+escHtml(a.host):'');
+  return side(f)+' → '+side(t);}
+function msgAge(row){return agoShort(Date.parse(row.created)/1000);}
+// paintMessageRow draws one message. Attention rows add a second line with the state and
+// any error, since that is what you act on. Each line truncates rather than wraps.
+function paintMessageRow(parent,machine,row,names,attn){
+  const b=document.createElement('button');b.className=`mrow tone-${msgTone(row.state)}${attn?' attn':''}`;
+  b.disabled=messageStale;b.onclick=()=>navTo({view:'message',machine:machine.id,id:row.id});
+  b.title=row.state;
+  const why=attn?`<div class="why">${escHtml(row.state)}${row.error?' · '+escHtml(row.error):''}</div>`:'';
+  b.innerHTML=`<span class="mt"><span class="who">${msgWho(row,names)}</span>
+    <span class="txt">${escHtml(row.first_line||'(empty body)')}</span>${why}</span>
+    <span class="when">${escHtml(msgAge(row))}</span>`;
+  parent.appendChild(b);}
+// Failures first (they have Resend/Drop), then held (Release), then the rest of the queue.
+const ATTN_RANK={indeterminate:0,dead:0,held:1};
+const newestFirst=(a,b)=>(b.created||'').localeCompare(a.created||'');
 function paintMessages(){
   const c=$('msgCards');c.replaceChildren();$('msgNotice').textContent=messageStale?'List is stale. Refresh before using controls.':'';
-  for(const v of ['queued','held','stuck','all'])$('mf-'+v).classList.toggle('on',v===messageFilter);
   for(const machine of messageMachines){
     const section=document.createElement('section');section.className='msgMachine';c.appendChild(section);
-    messageText(section,'h2',machine.label);
+    const head=document.createElement('div');head.className='mhead';section.appendChild(head);
+    messageText(head,'h2',machine.label);
     if(machine.error){
       messageText(section,'p',machine.problem==='not_installed'?'herd-msg not installed':machine.problem==='upgrade'?'Upgrade herd-remote':'Offline / unavailable','machWarn');
       messageText(section,'p',machine.error,'msgWrap');
@@ -829,56 +926,86 @@ function paintMessages(){
       continue;
     }
     const s=machine.status;
-    messageText(section,'p',s.killed?'Traffic stopped':'Traffic running',s.killed?'danger':'');
-    const controls=document.createElement('div');controls.className='msgControls';section.appendChild(controls);
-    controls.appendChild(messageButton(s.killed?'Resume':'Stop all traffic',()=>{
+    head.appendChild(messageButton(s.killed?'Resume traffic':'Stop traffic',()=>{
       if(confirm(`${s.killed?'Resume':'Stop all'} traffic on ${machine.label}?${s.killed?' Queued mail can run.':''}`))
         messageAct(machine.id,{action:'kill',value:s.killed?'off':'on',confirm:true});
     },!s.killed));
-    messageText(section,'p',Object.entries(s.counts||{}).map(([state,n])=>`${state}: ${n}`).join(' · '),'msgCounts');
-    for(const h of s.health||[])messageText(section,'p',`${h.check}: ${h.detail}${h.fix?' - '+h.fix:''}`,'machWarn msgWrap');
-    const rows=[...(s.pending||[]),...(messageFilter==='all'?(s.recent||[]):[])].filter(m=>
-      messageFilter==='all'||(messageFilter==='stuck'?['indeterminate','dead'].includes(m.state):
-      messageFilter==='queued'?['queued','claimed','injecting','outbox'].includes(m.state):m.state==='held'));
-    if(!rows.length)messageText(section,'div','No messages','empty');
-    for(const row of rows){
-      const b=document.createElement('button');b.className='card msgRow';b.disabled=messageStale;
-      b.onclick=()=>navTo({view:'message',machine:machine.id,id:row.id});
-      b.innerHTML=`<span class="age">${escHtml(agoShort(Date.parse(row.created)/1000))}</span>
-        <span class="meta"><span class="t">${escHtml(row.first_line||'(empty body)')}</span>
-        <span class="s">${escHtml(row.from)} to ${escHtml(row.to)}</span>
-        <span class="s">${escHtml(row.created)}${row.error?' · '+escHtml(row.error):''}</span></span>
-        <span class="badge">${escHtml(row.state)}</span>`;
-      section.appendChild(b);
+    if(s.killed)messageText(section,'p','Traffic stopped. Nothing is delivered until you resume it.','machWarn');
+    // Counts collapse to the three state families; zero families are left out.
+    const counts=s.counts||{},fam={ok:0,wait:0,fail:0};
+    for(const [state,n] of Object.entries(counts))if(fam[msgTone(state)]!==undefined)fam[msgTone(state)]+=n;
+    const sum=messageText(section,'p','','msum');
+    sum.innerHTML=[['ok','delivered'],['wait','waiting'],['fail','failed']].filter(([k])=>fam[k])
+      .map(([k,l])=>`<b class="tone-${k}">${fam[k]}</b> ${l}`).join(' · ')||'No messages yet';
+    sum.title=Object.entries(counts).map(([state,n])=>`${state}: ${n}`).join(', ');
+
+    const sessions=s.sessions||[],names={};
+    for(const x of sessions)if(x.name)names[x.id]=x.name;
+    const recent=s.recent||[],pending=s.pending||[];
+    const attn=[...pending,...recent.filter(m=>['indeterminate','dead'].includes(m.state))];
+    const attnIDs=new Set();const attnRows=attn.filter(m=>!attnIDs.has(m.id)&&attnIDs.add(m.id));
+    attnRows.sort((a,b)=>((ATTN_RANK[a.state]??2)-(ATTN_RANK[b.state]??2))||newestFirst(a,b));
+    const waitingSessions=sessions.filter(x=>x.unsent>0||x.blocked);
+    const health=s.health||[];
+
+    messageText(section,'div','Needs attention','msec');
+    if(!attnRows.length&&!waitingSessions.length&&!health.length)messageText(section,'p','Nothing waiting.','mnone');
+    for(const row of attnRows)paintMessageRow(section,machine,row,names,true);
+    for(const x of waitingSessions)paintMessageSession(section,machine,x);
+    if(health.length){
+      const d=messageFold(section,machine.id+':health',`⚠ ${health.length} health warning${health.length>1?'s':''}`);
+      for(const h of health)messageText(d,'p',`${h.check}: ${h.detail}${h.fix?' - '+h.fix:''}`,'machWarn msgWrap');
     }
-    const sessions=s.sessions||[];
-    if(sessions.length){messageText(section,'h3','Sessions');
-      for(const session of sessions.filter(s=>!['offline','dead'].includes(s.state)))paintMessageSession(section,machine,session,false);}
-    const offline=sessions.filter(s=>['offline','dead'].includes(s.state));
-    if(offline.length){messageText(section,'h3','Offline sessions');for(const session of offline)paintMessageSession(section,machine,session,true);}
+
+    const hist=recent.filter(m=>!attnIDs.has(m.id)).sort(newestFirst);
+    messageText(section,'div','Recent','msec');
+    if(!hist.length)messageText(section,'p','No delivered or dropped mail yet.','mnone');
+    const all=messageMore.has(machine.id);
+    for(const row of all?hist:hist.slice(0,RECENT_SHOWN))paintMessageRow(section,machine,row,names,false);
+    if(hist.length>RECENT_SHOWN){
+      const more=document.createElement('button');more.className='mmore';
+      more.textContent=all?'Show fewer':`Show ${hist.length-RECENT_SHOWN} more`;
+      more.onclick=()=>{all?messageMore.delete(machine.id):messageMore.add(machine.id);paintMessages();};
+      section.appendChild(more);
+    }
+
+    // Every session stays reachable (opt out, allow, clear), folded so it isn't noise.
+    const rest=sessions.filter(x=>!(x.unsent>0||x.blocked));
+    if(rest.length){
+      const live=rest.filter(x=>!['offline','dead'].includes(x.state)).length;
+      const d=messageFold(section,machine.id+':sessions',`Sessions: ${live} live, ${rest.length-live} offline`);
+      for(const x of rest)paintMessageSession(d,machine,x);
+    }
   }
 }
-function paintMessageSession(section,machine,s,offline){
-  const row=document.createElement('div');row.className='msgSession';section.appendChild(row);
-  messageText(row,'p',`${s.name||s.id} · ${s.harness} · ${s.state}${s.blocked?' · blocked':''} · ${s.unsent} unsent${s.opted_out?' · opted out':''}`,'msgWrap');
-  if(s.state==='detached')messageText(row,'p',`Resume the pinned session with codex --remote unix:// resume ${s.id}. Mail waits.`,'machWarn msgWrap');
+// One line per session with its one action: Clear for an offline session (drops its unsent
+// mail), otherwise Opt out / Allow messages.
+function paintMessageSession(parent,machine,s){
+  const offline=['offline','dead'].includes(s.state);
+  const tone=s.unsent>0||s.blocked?'wait':offline?'other':'ok';
+  const row=document.createElement('div');row.className=`mrow sess tone-${tone}`;parent.appendChild(row);
+  const mt=document.createElement('span');mt.className='mt';row.appendChild(mt);
+  messageText(messageText(mt,'span','','who'),'b',s.name||s.id);
+  messageText(mt,'span',[s.harness,s.state,s.blocked?'blocked':'',s.unsent?`${s.unsent} unsent`:'',s.opted_out?'opted out':''].filter(Boolean).join(' · '),'txt');
+  if(s.state==='detached')messageText(mt,'div',`Resume with codex --remote unix:// resume ${s.id}. Mail waits.`,'why');
   if(offline)row.appendChild(messageButton('Clear',()=>{
     if(confirm(`Clear ${s.name||s.id} on ${machine.label}? Drop ${s.unsent} unsent messages. The herdr pane stays open.`))
       messageAct(machine.id,{action:'prune',id:s.id,unsent:s.unsent,confirm:true});
   },true));
-  else row.appendChild(messageButton(s.opted_out?'Allow messages':'Opt out',()=>{
+  else row.appendChild(messageButton(s.opted_out?'Allow':'Opt out',()=>{
     if(confirm(`${s.opted_out?'Allow messages for':'Stop messages to'} ${s.name||s.id}?`))
       messageAct(machine.id,{action:'allow',id:s.id,value:s.opted_out?'on':'off',confirm:true});
   }));
 }
-function renderMessageDetail(st){stopPoll();show('messageDetailView');$('messageTitle').textContent='Message';$('messageError').textContent='';$('messageBody').textContent='Loading…';
+function renderMessageDetail(st){stopPoll();show('messageDetailView');$('messageTitle').textContent='Message';$('messageTitle').className='';$('messageError').textContent='';$('messageBody').textContent='Loading…';
   $('messageEnvelope').textContent='';$('messageAttempts').textContent='';$('messageHistory').textContent='';$('messageActions').replaceChildren();
   startMessagePoll();}
 async function loadMessageDetail(epoch){
   const st=history.state;if(st?.view!=='message')return;
   try{
     const m=await api(messageURL(st.machine,st.id));if(epoch!==messageEpoch)return;
-    $('messageTitle').textContent=m.state||'Message';$('messageBody').textContent=m.body||'';
+    $('messageTitle').textContent=m.state||'Message';$('messageTitle').className=m.state?'tone-'+msgTone(m.state):'';
+    $('messageBody').textContent=m.body||'';
     $('messageEnvelope').textContent=m.envelope||`From: ${m.sender}\nTo: ${m.recipient}@${m.destination}\nID: ${m.id}\nOrigin: ${m.origin}\nHop: ${m.hop}\nCreated: ${m.created}`;
     $('messageAttempts').textContent=JSON.stringify(m.attempts||[],null,2);
     $('messageHistory').textContent=JSON.stringify(m.history||[],null,2);

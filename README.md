@@ -6,7 +6,7 @@ Spawn a new agent session in any folder, see which sessions are **idle / working
 blocked**, read a session's screen, and do the minimal interactions that matter from
 your phone: approve/deny a prompt, interrupt a hang, `/clear`, send a prompt, rename,
 or kill a session. Built for the case where you're away from the keyboard and a Codex,
-Claude, or Hermes session is stuck waiting on you.
+Claude, Hermes, or Muse session is stuck waiting on you.
 
 It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
 `herd-spawn` helper). No daemon of its own beyond an HTTP server; herdr does the work.
@@ -38,18 +38,21 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   Fable/Haiku via Claude Code's aliases, which always resolve to the newest model in
   each family; Codex: read live from codex's own `~/.codex/models_cache.json`, plus a
   reasoning-effort picker with that model's levels; Hermes: one entry, since it reads
-  model and reasoning from `~/.hermes/config.yaml`). New models appear without a
-  herd-remote release. One **Launch** button, tinted
+  model and reasoning from `~/.hermes/config.yaml`; Muse: read live from Muse's own
+  model catalog in `~/.local/share/muse/model-catalog/`, plus an effort picker with that
+  model's levels). New models appear without a herd-remote release. One **Launch** button, tinted
   to the chosen agent. The spawn name is passed to Claude's own `--name` so it shows
   inside Claude too, not just in herdr. After spawning it jumps straight into the new
   session and clears the form.
 - **Resume** - lists past sessions read straight from disk (Claude
   `~/.claude/projects/*/<uuid>.jsonl`, titled by the `ai-title` record; Codex
   `~/.codex/session_index.jsonl`, with folder and last activity from each thread's
-  rollout file; Hermes `~/.hermes/state.db`, minus cron runs), most-recent first,
-  filterable by folder/name and by a **Claude / Codex / Hermes** segmented toggle. Tap
-  one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
-  `hermes --resume <id>`) in a fresh herdr workspace, in the folder the session ran in.
+  rollout file; Hermes `~/.hermes/state.db`, minus cron runs; Muse
+  `~/.local/share/muse/session-index.db`, minus empty, forked and subagent sessions),
+  most-recent first, filterable by folder/name and by a **Claude / Codex / Hermes / Muse**
+  segmented toggle. Tap one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
+  `hermes --resume <id>` / `muse resume <id>`) in a fresh herdr workspace, in the folder
+  the session ran in.
 
 ## Remote machines
 
@@ -89,6 +92,24 @@ Hermes works like the other two, with a few differences worth knowing:
   `send-keys Enter`, which is what actually submits.
 - Sessions launch in Hermes' classic REPL (its default without `--tui`): line-based
   output reads far better through the phone's scrollback than a full-screen TUI.
+
+## Muse notes
+
+Muse (Meta's terminal coding agent, checked against 1.4.14) launches through
+`herd-spawn -a muse`, which turns on herd-msg mail for that session.
+
+- **No plugin to install.** Muse ships its own herdr hook, so its panes report
+  idle/working/blocked on their own.
+- **Submitting works like Claude and Codex.** `herdr pane run` writes the text and the
+  Enter in one go and Muse submits it, so phone prompts take the default path.
+- **Effort** is passed as `--reasoning-effort`. Muse also has `none` and `minimal`, but
+  herd-spawn accepts only `low` through `ultra`, so the phone offers that range. A blank
+  model or effort means Muse's own default from `~/.config/muse/settings.json`.
+- The command picker carries Muse's own commands: `/effort <level>`, `/model`, `/status`,
+  `/usage` (which also shows context), `/stop`, `/questions` and `/quit`.
+- Resume lists each session as `name: title`, where the name is Muse's session name
+  (`lemon-photon`) and the title is its generated description or first prompt. The
+  resumed workspace is labeled with the session name.
 
 ## Codex notes
 
@@ -208,8 +229,9 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 
 - `herdr` and `herd-spawn` on `PATH` (this repo assumes `~/.local/bin`).
 - Go 1.18+ to build.
-- `python3` on `PATH` for the Hermes resume list - its sessions live in a WAL-mode
-  SQLite store, and reading it through python3's stdlib keeps this binary dependency-free.
+- `python3` on `PATH` for the Hermes and Muse resume lists - their sessions live in
+  WAL-mode SQLite stores, and reading them through python3's stdlib keeps this binary
+  dependency-free.
 - WSL2 with the WSLExpose hop installed (`expose-port install`) for LAN access.
 
 ### Agent launchers (how sessions actually start)
@@ -235,13 +257,23 @@ folders you trust, same as running the CLI yourself.
 
 ## Messages
 
-Open **Messages** in the session list header to watch herd-msg on this machine and
-all enabled saved herdr machines. The badge counts indeterminate and dead messages.
+Open **Messages** (the ✉ button) in the session list header to watch herd-msg on this
+machine and all enabled saved herdr machines. The badge counts indeterminate and dead
+messages and turns red when any exist.
 A `+` means some machines could not be checked. The view polls every four seconds
 while visible and refreshes when the phone returns to the foreground.
 
-Use Queued, Held, Stuck or All to filter mail. Tap a row for its body, envelope,
-attempts and state history. Release held mail. Resend or drop stuck mail after
+Each machine shows its traffic control, one line of counts, then two lists. **Needs
+attention** comes first: failed mail that can be resent or dropped, held mail, the rest
+of the queue, any session holding unsent mail, and folded health warnings. **Recent**
+follows, newest first, 25 rows with a button for the rest. Rows are coloured by state:
+green for delivered (sent, injected), amber for waiting (queued, held, outbox, claimed,
+injecting) and red for failed (dropped, dead, indeterminate). Each row shows the sender,
+recipient, first line and age; addresses are shortened to session names, and the host
+only appears on mail between machines. Every other session sits in a folded Sessions
+list with its Opt out, Allow or Clear action.
+
+Tap a row for its body, envelope, attempts and state history. Release held mail. Resend or drop stuck mail after
 confirmation. Resending an uncertain message may run it twice. The broker rejects
 stale resolve timestamps and changed unsent counts rather than acting on an old list.
 Clear an offline session after reviewing its unsent count; this drops unsent mail

@@ -358,6 +358,9 @@ func ReadPane(machine, pane string, lines int) (string, error) {
 // Hermes' input reads that as a paste: the trailing Enter becomes a literal newline and
 // the prompt just sits in the composer unsent. For hermes, write the text and then send
 // Enter as its own key event - that is what actually submits.
+//
+// Muse (1.4.14) submits on the one-write `pane run` like claude/codex (checked in a live
+// pane: the prompt ran and the composer cleared), so it takes the default path.
 func SendPrompt(machine, pane, text string) error {
 	if paneAgent(machine, pane) == "hermes" {
 		if _, err := herdrOn(machine, "pane", "send-text", pane, text); err != nil {
@@ -474,10 +477,26 @@ func CloseWorkspace(machine, workspaceID string) error {
 	return err
 }
 
-// codexEfforts is the allowlist for the codex reasoning-effort passthrough, so the
+// spawnAgents is every agent herd-spawn's -a accepts. Checked before the name becomes argv.
+var spawnAgents = map[string]bool{"claude": true, "codex": true, "hermes": true, "muse": true}
+
+// validSpawnAgent normalizes and checks an agent name from the phone ("" = claude).
+func validSpawnAgent(agent string) (string, error) {
+	if agent == "" {
+		agent = "claude"
+	}
+	if !spawnAgents[agent] {
+		return "", fmt.Errorf("unknown agent: %q", agent)
+	}
+	return agent, nil
+}
+
+// codexEfforts is the allowlist for the reasoning-effort passthrough, so the
 // HTTP layer can only hand herd-spawn a known-good value (it becomes a shell token).
 // It is the union of every level codex's model list has offered; the per-model subset
 // comes from CodexModels, so this only needs a new entry when codex invents a level.
+// Muse shares it: herd-spawn validates -e as low..ultra for every agent, so Muse's own
+// extra levels (none, minimal) are dropped rather than offered and then rejected.
 var codexEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true, "ultra": true}
 
 // CodexModel is one entry in the phone's Codex model dropdown.
@@ -550,12 +569,12 @@ func CodexModels() []CodexModel {
 var reModelSlug = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // reSessionID guards a resume target before it becomes a herd-spawn -r shell token.
-// Claude ids are UUIDs and codex thread ids are UUID-ish (hex + dashes); hermes ids are
-// timestamp-stamped like 20260824_155337_c0c98b, hence the underscore.
+// Claude and muse ids are UUIDs and codex thread ids are UUID-ish (hex + dashes); hermes
+// ids are timestamp-stamped like 20260824_155337_c0c98b, hence the underscore.
 var reSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 
 // Spawn creates a new workspace in dir and launches the chosen agent, optionally
-// seeded. agent is "claude" (default) or "codex". name, when set, becomes the
+// seeded. agent is "claude" (default), "codex", "hermes" or "muse". name, when set, becomes the
 // workspace label (herdr nav + this app's list) via herd-spawn's -l. effort is a
 // codex-only reasoning-effort override (ignored for claude). resumeID, when set,
 // resumes that existing session instead of starting fresh (model/effort are then the
@@ -565,11 +584,9 @@ var reSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 // calls but not helper scripts, and herd-spawn has to check the folder and resolve the
 // launcher on the box the agent will run on.
 func Spawn(m Machine, dir, prompt, model, effort, agent, name, resumeID string, background bool) (string, error) {
-	if agent == "" {
-		agent = "claude"
-	}
-	if agent != "claude" && agent != "codex" && agent != "hermes" {
-		return "", fmt.Errorf("unknown agent: %q", agent)
+	agent, err := validSpawnAgent(agent)
+	if err != nil {
+		return "", err
 	}
 	if resumeID != "" && !reSessionID.MatchString(resumeID) {
 		return "", fmt.Errorf("bad resume id")
@@ -592,8 +609,8 @@ func Spawn(m Machine, dir, prompt, model, effort, agent, name, resumeID string, 
 		if model != "" {
 			args = append(args, "-m", model)
 		}
-		// effort maps to codex's model_reasoning_effort and hermes' --reasoning; claude
-		// has no launch-time equivalent, so never send it there.
+		// effort maps to codex's model_reasoning_effort, hermes' --reasoning and muse's
+		// --reasoning-effort; claude has no launch-time equivalent, so never send it there.
 		if effort != "" && agent != "claude" {
 			args = append(args, "-e", effort)
 		}
@@ -662,7 +679,7 @@ func Folders() ([]string, error) {
 // "agent:<name>" line per agent CLI found, so the spawn form can flag a missing one.
 const remoteFoldersSh = `echo "$HOME"
 find "$HOME" -mindepth 1 -maxdepth 2 -name '.*' -prune -o -mindepth 1 -maxdepth 2 -type d -print 2>/dev/null
-for a in claude codex hermes; do
+for a in claude codex hermes muse; do
   if [ -x "$HOME/.local/bin/$a" ] || command -v "$a" >/dev/null 2>&1; then echo "agent:$a"; fi
 done`
 
@@ -717,10 +734,13 @@ func RemoteFolders(m Machine) (dirs []string, home string, agents []string, err 
 //           Read through a python3 one-liner rather than a Go SQLite driver: this binary
 //           has no module dependencies and the store is WAL-mode, so a hand-rolled reader
 //           would miss anything still sitting in the -wal file.
+//   muse:   ~/.local/share/muse/session-index.db - Muse's own SQLite session index
+//           (session_id, title, workspace_root, last activity in microseconds). Read the
+//           same way as hermes, for the same reasons.
 
 // HistoryEntry is one resumable past session from an agent's on-disk store.
 type HistoryEntry struct {
-	Agent    string `json:"agent"`    // claude | codex | hermes
+	Agent    string `json:"agent"`    // claude | codex | hermes | muse
 	ID       string `json:"id"`       // resume target
 	Name     string `json:"name"`     // ai-title (claude) / thread_name (codex) / title (hermes)
 	Cwd      string `json:"cwd"`      // folder the session ran in; "" if unknown
@@ -739,6 +759,7 @@ func HistorySessions(filter string, limit int) []HistoryEntry {
 	}
 	all := append(claudeHistory(), codexHistory()...)
 	all = append(all, hermesHistory()...)
+	all = append(all, museHistory()...)
 	if filter = strings.ToLower(strings.TrimSpace(filter)); filter != "" {
 		kept := all[:0]
 		for _, e := range all {
@@ -1004,6 +1025,13 @@ func hermesHistory() []HistoryEntry {
 	if err != nil {
 		return nil
 	}
+	return parseHistoryLines("hermes", out)
+}
+
+// parseHistoryLines turns the JSON lines a history helper script prints
+// ({"id","title","cwd","modified"}) into entries for one agent. Lines without an id,
+// or that don't parse, are skipped.
+func parseHistoryLines(agent string, out []byte) []HistoryEntry {
 	var entries []HistoryEntry
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
@@ -1018,8 +1046,209 @@ func hermesHistory() []HistoryEntry {
 			continue
 		}
 		entries = append(entries, HistoryEntry{
-			Agent: "hermes", ID: rec.ID, Name: rec.Title, Cwd: rec.Cwd, Modified: rec.Modified,
+			Agent: agent, ID: rec.ID, Name: rec.Title, Cwd: rec.Cwd, Modified: rec.Modified,
 		})
 	}
 	return entries
+}
+
+// museIndexPy dumps Muse's session index as the same JSON lines hermesStatePy prints.
+// argv[1] is the database path.
+//
+// Muse names every session (session_name, or the logged name like "lemon-photon") and
+// titles it with a generated description or, until one exists, the first prompt. The
+// list shows "name: title" so two sessions that started with the same prompt still read
+// apart. Rows with no prompts are empty shells, and forks or subagent sessions
+// (msp_kind other than root, or spawned by a parent) are not something to resume from the
+// phone. Columns are checked first, so an older or newer index that lacks one of the
+// optional columns still lists. Times are microseconds. Read-only, with the same temp-copy
+// fallback as hermes for a WAL that needs recovery.
+const museIndexPy = `
+import json, os, shutil, sqlite3, sys, tempfile
+
+db = sys.argv[1]
+if not os.path.exists(db):
+    sys.exit(0)
+
+def query(cols):
+    def first(*names):
+        have = [n for n in names if n in cols]
+        if not have:
+            return "''"
+        return "coalesce(" + ", ".join("nullif(%s, '')" % n for n in have) + ", '')"
+    def num(*names):
+        have = [n for n in names if n in cols]
+        return "coalesce(" + ", ".join(have + ["0"]) + ")"
+    where = ["1 = 1"]
+    if "prompt_count" in cols:
+        where.append("coalesce(prompt_count, 0) > 0")
+    if "msp_kind" in cols:
+        where.append("coalesce(msp_kind, 'root') = 'root'")
+    if "msp_spawned_by_parent_session_id" in cols:
+        where.append("msp_spawned_by_parent_session_id is null")
+    return ("select session_id, %s, %s, %s, %s from sessions where %s order by 5 desc limit 200" % (
+        first("session_name", "logged_session_name"),
+        first("effective_long_title", "title", "first_user_prompt"),
+        first("workspace_root"),
+        num("msp_last_activity_at_us", "updated_at_us", "created_at_us"),
+        " and ".join(where)))
+
+def rows(path, readonly=True):
+    uri = "file:%s%s" % (path, "?mode=ro" if readonly else "")
+    con = sqlite3.connect(uri, uri=True, timeout=2)
+    try:
+        cols = {r[1] for r in con.execute("pragma table_info(sessions)")}
+        if "session_id" not in cols:
+            return []
+        return con.execute(query(cols)).fetchall()
+    finally:
+        con.close()
+
+try:
+    found = rows(db)
+except Exception:
+    tmp = tempfile.mkdtemp()
+    try:
+        for ext in ("", "-wal", "-shm"):
+            if os.path.exists(db + ext):
+                shutil.copy2(db + ext, os.path.join(tmp, "index.db" + ext))
+        found = rows(os.path.join(tmp, "index.db"), readonly=False)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+for sid, name, title, cwd, ts in found:
+    title = " ".join(title.split())
+    if len(title) > 90:
+        title = title[:89].rstrip() + "..."
+    label = "%s: %s" % (name, title) if name and title else (name or title)
+    print(json.dumps({"id": sid, "title": label, "cwd": cwd, "modified": int(ts or 0) // 1000000}))
+`
+
+// museDataDir is where Muse keeps its index and model catalog: $XDG_DATA_HOME/muse,
+// else ~/.local/share/muse.
+func museDataDir() string {
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "muse")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "muse")
+}
+
+// museHistory lists resumable Muse sessions. Best-effort like hermesHistory: no Muse, no
+// python3 or an unreadable index yields no entries. Resume runs `herd-spawn -a muse -r
+// <uuid>`, which becomes `muse resume <uuid>`.
+func museHistory() []HistoryEntry {
+	dir := museDataDir()
+	if dir == "" {
+		return nil
+	}
+	return museHistoryAt(filepath.Join(dir, "session-index.db"))
+}
+
+func museHistoryAt(db string) []HistoryEntry {
+	if _, err := os.Stat(db); err != nil {
+		return nil
+	}
+	out, err := run("python3", "-c", museIndexPy, db)
+	if err != nil {
+		return nil
+	}
+	entries := parseHistoryLines("muse", out)
+	kept := entries[:0]
+	for _, e := range entries {
+		if reSessionID.MatchString(e.ID) { // never offer a row the spawn path would refuse
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
+// MuseModel is one entry in the phone's Muse model dropdown. Same shape as CodexModel.
+type MuseModel = CodexModel
+
+// museFallbackModels is used only when Muse's model catalog is missing or unreadable.
+var museFallbackModels = []MuseModel{
+	{Slug: "muse-spark-1.3", Name: "muse-spark-1.3", Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+	{Slug: "muse-wonder-1.0", Name: "muse-wonder-1.0", Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+}
+
+// effortOrder sorts effort levels the way a picker should show them; Muse's catalog
+// lists them alphabetically.
+var effortOrder = map[string]int{"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
+
+// MuseModels lists the visible models in Muse's own model catalog
+// (<muse data>/model-catalog/*.json, refreshed by Muse itself), so new Muse models show up
+// without a herd-remote release. Efforts are filtered through codexEfforts so the phone
+// never offers a level herd-spawn would reject.
+func MuseModels() []MuseModel {
+	dir := museDataDir()
+	if dir == "" {
+		return museFallbackModels
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "model-catalog", "*.json"))
+	sort.Strings(files)
+	var raws [][]byte
+	for _, f := range files {
+		if b, err := os.ReadFile(f); err == nil {
+			raws = append(raws, b)
+		}
+	}
+	if out := parseMuseCatalogs(raws); len(out) > 0 {
+		return out
+	}
+	return museFallbackModels
+}
+
+// parseMuseCatalogs merges catalog files: visible rows only, first occurrence of a model
+// id wins, the catalog's default model first.
+func parseMuseCatalogs(raws [][]byte) []MuseModel {
+	type row struct {
+		ModelID    string `json:"model_id"`
+		Label      string `json:"display_label"`
+		Visibility string `json:"visibility"`
+		IsDefault  bool   `json:"is_default"`
+		Variants   []struct {
+			Tier string `json:"tier"`
+		} `json:"reasoning_effort_variants"`
+	}
+	seen := map[string]bool{}
+	var out []MuseModel
+	defaultIdx := -1
+	for _, raw := range raws {
+		var cat struct {
+			Rows []row `json:"rows"`
+		}
+		if json.Unmarshal(raw, &cat) != nil {
+			continue
+		}
+		for _, r := range cat.Rows {
+			if r.Visibility != "visible" || seen[r.ModelID] || !reModelSlug.MatchString(r.ModelID) {
+				continue
+			}
+			seen[r.ModelID] = true
+			m := MuseModel{Slug: r.ModelID, Name: r.Label}
+			if m.Name == "" {
+				m.Name = r.ModelID
+			}
+			for _, v := range r.Variants {
+				if codexEfforts[v.Tier] {
+					m.Efforts = append(m.Efforts, v.Tier)
+				}
+			}
+			sort.SliceStable(m.Efforts, func(i, j int) bool { return effortOrder[m.Efforts[i]] < effortOrder[m.Efforts[j]] })
+			if r.IsDefault && defaultIdx < 0 {
+				defaultIdx = len(out)
+			}
+			out = append(out, m)
+		}
+	}
+	if defaultIdx > 0 {
+		d := out[defaultIdx]
+		out = append(out[:defaultIdx], out[defaultIdx+1:]...)
+		out = append([]MuseModel{d}, out...)
+	}
+	return out
 }
