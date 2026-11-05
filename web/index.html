@@ -723,7 +723,9 @@ function renderEffort(){const o=selModel(),row=$('effortRow'),sel=$('spawnEffort
   if(!EFFORT_AGENTS[agent]){row.classList.add('hidden');return;}
   row.classList.remove('hidden');
   const m=(agentModels[agent]||[]).find(x=>x.slug===o.dataset.model);
-  const levels=m&&m.efforts&&m.efforts.length?m.efforts:['low','medium','high','xhigh','max'];
+  // A known model offers only its own allowed levels (maybe none, leaving just the
+  // default); the generic list is only for a model the catalog didn't describe.
+  const levels=m?(m.efforts||[]):['low','medium','high','xhigh','max'];
   const prev=sel.value;sel.innerHTML=`<option value="">${EFFORT_AGENTS[agent]}</option>`
     +levels.map(l=>`<option value="${l}">${l}</option>`).join('');
   if(levels.includes(prev))sel.value=prev;}
