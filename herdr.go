@@ -725,7 +725,8 @@ func RemoteFolders(m Machine) (dirs []string, home string, agents []string, err 
 // Both agents persist every session to disk, so we can list resumable past sessions
 // without touching either TUI:
 //   claude: ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl - the uuid IS the resume id;
-//           name = last "ai-title" record; cwd = from the transcript. (herdr's
+//           name = last "custom-title" (/rename), else last "ai-title"; cwd = from the
+//           transcript. (herdr's
 //           agent_session.value for a live claude pane equals this uuid.)
 //   codex:  ~/.codex/session_index.jsonl - a prebuilt {id, thread_name, updated_at}
 //           index of named (interactive) threads. cwd isn't in it, so it comes from
@@ -742,7 +743,8 @@ func RemoteFolders(m Machine) (dirs []string, home string, agents []string, err 
 type HistoryEntry struct {
 	Agent    string `json:"agent"`    // claude | codex | hermes | muse
 	ID       string `json:"id"`       // resume target
-	Name     string `json:"name"`     // ai-title (claude) / thread_name (codex) / title (hermes)
+	Name     string `json:"name"`     // custom-title or ai-title (claude) / thread_name (codex) / title (hermes)
+	Prompt   string `json:"prompt"`   // claude's last prompt, so an untitled session still reads and searches
 	Cwd      string `json:"cwd"`      // folder the session ran in; "" if unknown
 	Modified int64  `json:"modified"` // unix seconds, for recency sort
 }
@@ -752,7 +754,8 @@ type HistoryEntry struct {
 const historyScanCap = 80
 
 // HistorySessions returns resumable past sessions from every agent, most-recent first.
-// filter, when set (case-insensitive), matches on cwd or name. limit caps the returned list.
+// filter, when set (case-insensitive), matches on cwd, name, prompt or id. limit caps the
+// returned list.
 func HistorySessions(filter string, limit int) []HistoryEntry {
 	if limit <= 0 {
 		limit = 60
@@ -763,7 +766,7 @@ func HistorySessions(filter string, limit int) []HistoryEntry {
 	if filter = strings.ToLower(strings.TrimSpace(filter)); filter != "" {
 		kept := all[:0]
 		for _, e := range all {
-			if strings.Contains(strings.ToLower(e.Cwd+" "+e.Name), filter) {
+			if strings.Contains(strings.ToLower(e.Cwd+" "+e.Name+" "+e.Prompt+" "+e.ID), filter) {
 				kept = append(kept, e)
 			}
 		}
@@ -819,47 +822,160 @@ func claudeHistory() []HistoryEntry {
 	}
 	out := make([]HistoryEntry, 0, len(refs))
 	for _, r := range refs {
-		name, cwd := claudeTitleAndCwd(r.path)
-		out = append(out, HistoryEntry{
-			Agent:    "claude",
-			ID:       strings.TrimSuffix(filepath.Base(r.path), ".jsonl"),
-			Name:     name,
-			Cwd:      cwd,
-			Modified: r.mtime.Unix(),
-		})
+		out = append(out, claudeEntry(r.path, r.mtime))
 	}
 	return out
 }
 
-// claudeTitleAndCwd pulls the last "ai-title" and the first "cwd" from a transcript,
-// scanning line-by-line so a multi-MB file isn't held fully parsed in memory.
-func claudeTitleAndCwd(path string) (title, cwd string) {
+func claudeEntry(path string, mtime time.Time) HistoryEntry {
+	t := readClaudeTranscript(path)
+	return HistoryEntry{
+		Agent:    "claude",
+		ID:       strings.TrimSuffix(filepath.Base(path), ".jsonl"),
+		Name:     t.title(),
+		Prompt:   t.lastPrompt,
+		Cwd:      t.cwd,
+		Modified: mtime.Unix(),
+	}
+}
+
+// claudeTranscript is what the resume list needs from one claude transcript.
+type claudeTranscript struct {
+	customTitle string // last /rename; the user's own name wins over the generated one
+	aiTitle     string // last generated title
+	lastPrompt  string // most recent prompt, shown and searched when there is no title
+	cwd         string // first recorded cwd
+}
+
+func (t claudeTranscript) title() string {
+	if t.customTitle != "" {
+		return t.customTitle
+	}
+	return t.aiTitle
+}
+
+// readClaudeTranscript scans a transcript line by line so a multi-MB file isn't held
+// fully parsed in memory. Only lines that carry one of the wanted record types (or a cwd,
+// until one is found) are decoded.
+func readClaudeTranscript(path string) claudeTranscript {
+	var t claudeTranscript
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return t
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // attachment lines can be large
 	for sc.Scan() {
 		line := sc.Bytes()
-		if bytes.Contains(line, []byte(`"ai-title"`)) {
-			var t struct {
-				AiTitle string `json:"aiTitle"`
-			}
-			if json.Unmarshal(line, &t) == nil && t.AiTitle != "" {
-				title = t.AiTitle // keep the last one (most recent title)
-			}
-		} else if cwd == "" && bytes.Contains(line, []byte(`"cwd":`)) {
-			var c struct {
-				Cwd string `json:"cwd"`
-			}
-			if json.Unmarshal(line, &c) == nil {
-				cwd = c.Cwd
-			}
+		meta := bytes.Contains(line, []byte(`"custom-title"`)) ||
+			bytes.Contains(line, []byte(`"ai-title"`)) ||
+			bytes.Contains(line, []byte(`"last-prompt"`))
+		if !meta && (t.cwd != "" || !bytes.Contains(line, []byte(`"cwd":`))) {
+			continue
+		}
+		var rec struct {
+			Type        string `json:"type"`
+			CustomTitle string `json:"customTitle"`
+			AiTitle     string `json:"aiTitle"`
+			LastPrompt  string `json:"lastPrompt"`
+			Cwd         string `json:"cwd"`
+		}
+		if json.Unmarshal(line, &rec) != nil {
+			continue
+		}
+		switch {
+		case rec.Type == "custom-title" && rec.CustomTitle != "":
+			t.customTitle = rec.CustomTitle
+		case rec.Type == "ai-title" && rec.AiTitle != "":
+			t.aiTitle = rec.AiTitle
+		case rec.Type == "last-prompt" && rec.LastPrompt != "":
+			t.lastPrompt = clipPrompt(rec.LastPrompt)
+		}
+		if t.cwd == "" && rec.Cwd != "" {
+			t.cwd = rec.Cwd
 		}
 	}
-	return title, cwd
+	return t
+}
+
+// clipPrompt collapses whitespace and trims a prompt to a list-row length.
+func clipPrompt(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > 120 {
+		s = strings.TrimSpace(string(r[:119])) + "..."
+	}
+	return s
+}
+
+// historyLookupCap bounds an id lookup; a short prefix can match many sessions.
+const historyLookupCap = 50
+
+// HistoryLookup finds past sessions whose id starts with id (a full id or a prefix of at
+// least 8 characters), across every agent and with no recency cap, so a session older
+// than the resume list's window can still be found by pasting its id.
+func HistoryLookup(id string) []HistoryEntry {
+	if !reSessionID.MatchString(id) {
+		return nil
+	}
+	all := append(claudeLookup(id), codexLookup(id)...)
+	all = append(all, hermesHistoryWith(id)...)
+	all = append(all, museHistoryWith(id)...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Modified > all[j].Modified })
+	if len(all) > historyLookupCap {
+		all = all[:historyLookupCap]
+	}
+	return all
+}
+
+// claudeLookup globs every project folder for <prefix>*.jsonl. id has already passed
+// reSessionID, so it holds no glob metacharacters.
+func claudeLookup(id string) []HistoryEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", id+"*.jsonl"))
+	if len(matches) > historyLookupCap {
+		matches = matches[:historyLookupCap]
+	}
+	var out []HistoryEntry
+	for _, p := range matches {
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out = append(out, claudeEntry(p, info.ModTime()))
+	}
+	return out
+}
+
+// codexLookup matches named threads from the index plus unnamed ones that only have a
+// rollout file.
+func codexLookup(id string) []HistoryEntry {
+	var out []HistoryEntry
+	seen := map[string]bool{}
+	for _, e := range codexHistory() {
+		if strings.HasPrefix(e.ID, id) {
+			out = append(out, e)
+			seen[e.ID] = true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return out
+	}
+	for tid, p := range codexRolloutPaths(filepath.Join(home, ".codex", "sessions")) {
+		if seen[tid] || !strings.HasPrefix(tid, id) {
+			continue
+		}
+		e := HistoryEntry{Agent: "codex", ID: tid, Cwd: codexCwd(tid, p)}
+		if info, err := os.Stat(p); err == nil {
+			e.Modified = info.ModTime().Unix()
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // codexHistory reads the prebuilt ~/.codex/session_index.jsonl index.
@@ -972,7 +1088,8 @@ func codexCwd(id, path string) string {
 	return cwd
 }
 
-// hermesStatePy dumps ~/.hermes/state.db's resumable sessions as JSON lines.
+// hermesStatePy dumps ~/.hermes/state.db's resumable sessions as JSON lines. An optional
+// argv[1] keeps only ids starting with it (an id lookup).
 //
 // Archived/hidden rows and empty shells are skipped, as is source "tool" (hermes' own
 // `sessions list` hides those too - they're subagent scratch, not something to resume).
@@ -987,17 +1104,20 @@ db = os.path.expanduser("~/.hermes/state.db")
 if not os.path.exists(db):
     sys.exit(0)
 
+prefix = sys.argv[1] if len(sys.argv) > 1 else ""
+
 Q = ("select id, coalesce(title, ''), coalesce(cwd, ''), "
      "coalesce(last_activity_at, started_at, 0) from sessions "
      "where coalesce(archived, 0) = 0 and coalesce(hidden, 0) = 0 "
      "and coalesce(message_count, 0) > 0 and coalesce(source, '') not in ('tool', 'cron') "
+     "and substr(id, 1, ?) = ? "
      "order by 4 desc limit 200")
 
 def rows(path, readonly=True):
     uri = "file:%s%s" % (path, "?mode=ro" if readonly else "")
     con = sqlite3.connect(uri, uri=True, timeout=2)
     try:
-        return con.execute(Q).fetchall()
+        return con.execute(Q, (len(prefix), prefix)).fetchall()
     finally:
         con.close()
 
@@ -1020,8 +1140,11 @@ for sid, title, cwd, ts in found:
 // hermesHistory lists resumable hermes sessions. Best-effort: any failure (no hermes
 // installed, no python3, unreadable store) yields no hermes entries rather than an error,
 // same as the other two readers.
-func hermesHistory() []HistoryEntry {
-	out, err := run("python3", "-c", hermesStatePy)
+func hermesHistory() []HistoryEntry { return hermesHistoryWith("") }
+
+// hermesHistoryWith is hermesHistory limited to ids starting with prefix ("" for all).
+func hermesHistoryWith(prefix string) []HistoryEntry {
+	out, err := run("python3", "-c", hermesStatePy, prefix)
 	if err != nil {
 		return nil
 	}
@@ -1053,7 +1176,7 @@ func parseHistoryLines(agent string, out []byte) []HistoryEntry {
 }
 
 // museIndexPy dumps Muse's session index as the same JSON lines hermesStatePy prints.
-// argv[1] is the database path.
+// argv[1] is the database path; an optional argv[2] keeps only ids starting with it.
 //
 // Muse names every session (session_name, or the logged name like "lemon-photon") and
 // titles it with a generated description or, until one exists, the first prompt. The
@@ -1067,6 +1190,7 @@ const museIndexPy = `
 import json, os, shutil, sqlite3, sys, tempfile
 
 db = sys.argv[1]
+prefix = sys.argv[2] if len(sys.argv) > 2 else ""
 if not os.path.exists(db):
     sys.exit(0)
 
@@ -1079,7 +1203,7 @@ def query(cols):
     def num(*names):
         have = [n for n in names if n in cols]
         return "coalesce(" + ", ".join(have + ["0"]) + ")"
-    where = ["1 = 1"]
+    where = ["substr(session_id, 1, ?) = ?"]
     if "prompt_count" in cols:
         where.append("coalesce(prompt_count, 0) > 0")
     if "msp_kind" in cols:
@@ -1100,7 +1224,7 @@ def rows(path, readonly=True):
         cols = {r[1] for r in con.execute("pragma table_info(sessions)")}
         if "session_id" not in cols:
             return []
-        return con.execute(query(cols)).fetchall()
+        return con.execute(query(cols), (len(prefix), prefix)).fetchall()
     finally:
         con.close()
 
@@ -1140,19 +1264,24 @@ func museDataDir() string {
 // museHistory lists resumable Muse sessions. Best-effort like hermesHistory: no Muse, no
 // python3 or an unreadable index yields no entries. Resume runs `herd-spawn -a muse -r
 // <uuid>`, which becomes `muse resume <uuid>`.
-func museHistory() []HistoryEntry {
+func museHistory() []HistoryEntry { return museHistoryWith("") }
+
+// museHistoryWith is museHistory limited to ids starting with prefix ("" for all).
+func museHistoryWith(prefix string) []HistoryEntry {
 	dir := museDataDir()
 	if dir == "" {
 		return nil
 	}
-	return museHistoryAt(filepath.Join(dir, "session-index.db"))
+	return museHistoryAtWith(filepath.Join(dir, "session-index.db"), prefix)
 }
 
-func museHistoryAt(db string) []HistoryEntry {
+func museHistoryAt(db string) []HistoryEntry { return museHistoryAtWith(db, "") }
+
+func museHistoryAtWith(db, prefix string) []HistoryEntry {
 	if _, err := os.Stat(db); err != nil {
 		return nil
 	}
-	out, err := run("python3", "-c", museIndexPy, db)
+	out, err := run("python3", "-c", museIndexPy, db, prefix)
 	if err != nil {
 		return nil
 	}

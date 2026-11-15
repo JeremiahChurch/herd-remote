@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -155,5 +156,63 @@ func TestParseMuseCatalogs(t *testing.T) {
 	}
 	if got := parseMuseCatalogs(nil); len(got) != 0 {
 		t.Fatalf("empty input gave %+v", got)
+	}
+}
+
+// A /rename (custom-title) beats the generated ai-title, the last of each wins, and the
+// last prompt is kept for untitled rows. A user message that merely quotes a record type
+// must not be read as that record.
+func TestReadClaudeTranscript(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	body := `{"type":"user","cwd":"/home/u/ha","message":{"content":"what is \"custom-title\"?"}}
+{"type":"ai-title","aiTitle":"Plan compute purchase"}
+{"type":"last-prompt","lastPrompt":"first   ask"}
+{"type":"custom-title","customTitle":"comp"}
+{"type":"custom-title","customTitle":"computr"}
+{"type":"last-prompt","lastPrompt":"go ahead and\nexpand the box"}
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := readClaudeTranscript(p)
+	want := claudeTranscript{customTitle: "computr", aiTitle: "Plan compute purchase", lastPrompt: "go ahead and expand the box", cwd: "/home/u/ha"}
+	if got != want {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+	if got.title() != "computr" {
+		t.Fatalf("title %q", got.title())
+	}
+	if (claudeTranscript{aiTitle: "x"}).title() != "x" {
+		t.Fatal("ai-title fallback")
+	}
+}
+
+func TestClipPrompt(t *testing.T) {
+	long := strings.Repeat("é", 200)
+	if got := clipPrompt(long); len([]rune(got)) != 122 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("clip gave %d runes", len([]rune(got)))
+	}
+}
+
+func TestMuseHistoryAtPrefix(t *testing.T) {
+	db := makeMuseIndex(t, `create table sessions (session_id text primary key, title text not null,
+	  workspace_root text, updated_at_us integer)`, []string{
+		`insert into sessions values ('01a1ad56-aebc-7d03-ac6f-375ac3d6b9af', 'one', '/w', 7000000)`,
+		`insert into sessions values ('01a1ad58-bfdd-71e3-aa3f-b7cec59bc204', 'two', '/w', 8000000)`,
+	})
+	got := museHistoryAtWith(db, "01a1ad56")
+	if len(got) != 1 || got[0].Name != "one" {
+		t.Fatalf("prefix lookup gave %+v", got)
+	}
+	if got := museHistoryAtWith(db, ""); len(got) != 2 {
+		t.Fatalf("no prefix gave %+v", got)
+	}
+}
+
+func TestHistoryLookupRejectsBadID(t *testing.T) {
+	for _, id := range []string{"", "short", "../../etc/passwd", "a*b?c[d]efgh"} {
+		if got := HistoryLookup(id); got != nil {
+			t.Errorf("HistoryLookup(%q) = %+v", id, got)
+		}
 	}
 }
