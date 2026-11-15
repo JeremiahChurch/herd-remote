@@ -45,12 +45,15 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   inside Claude too, not just in herdr. After spawning it jumps straight into the new
   session and clears the form.
 - **Resume** - lists past sessions read straight from disk (Claude
-  `~/.claude/projects/*/<uuid>.jsonl`, titled by the `ai-title` record; Codex
+  `~/.claude/projects/*/<uuid>.jsonl`, titled by its `/rename` name (`custom-title`),
+  else the `ai-title` record, else its last prompt; Codex
   `~/.codex/session_index.jsonl`, with folder and last activity from each thread's
   rollout file; Hermes `~/.hermes/state.db`, minus cron runs; Muse
   `~/.local/share/muse/session-index.db`, minus empty, forked and subagent sessions),
-  most-recent first, filterable by folder/name and by a **Claude / Codex / Hermes / Muse**
-  segmented toggle. Tap one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
+  most-recent first, filterable by folder/name/prompt and by a **Claude / Codex / Hermes / Muse**
+  segmented toggle. The list holds the ~200 most recent sessions; paste a session id (or
+  a whole `claude --resume <id>` command, or an id prefix of 8+ characters) into the
+  filter to find any session on disk, however old. Tap one to relaunch it (`claude --resume <id>` / `codex resume <id>` /
   `hermes --resume <id>` / `muse resume <id>`) in a fresh herdr workspace, in the folder
   the session ran in.
 
@@ -223,6 +226,7 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 | POST | `/api/sessions/{wid}/close` | kill workspace |
 | GET | `/api/folders` | spawn target folders |
 | GET | `/api/history?dir=&limit=` | past sessions (all agents) for resume |
+| GET | `/api/history?id=` | every session (all agents, no recency cap) whose id starts with `id` |
 | POST | `/api/spawn` | `{dir,name,prompt,model,effort,agent,resume,background}` |
 
 ## Requirements

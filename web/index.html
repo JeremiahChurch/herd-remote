@@ -305,7 +305,7 @@
     <button id="haMuse" onclick="setHistAgent('muse')">Muse</button>
   </div>
   <div style="padding:10px 12px 0"><input id="histFilter" class="list-input" style="margin:0"
-    placeholder="filter by folder or name…" oninput="filterHistory()"
+    placeholder="filter by folder or name, or paste a session id…" oninput="filterHistory()"
     autocapitalize="off" autocomplete="off" spellcheck="false"></div>
   <div class="scrollwrap"><div class="wrap" id="histCards"></div></div>
 </div>
@@ -794,27 +794,46 @@ function agoShort(sec){if(!sec)return'';let s=Math.floor(Date.now()/1000)-sec;if
   if(s<60)return'now';const m=Math.floor(s/60);if(m<60)return m+'m';
   const h=Math.floor(m/60);if(h<24)return h+'h';const d=Math.floor(h/24);
   if(d<30)return d+'d';return Math.floor(d/30)+'mo';}
+// An id typed or pasted into the filter is also looked up on the server, which searches
+// every session on disk rather than the ~200 most recent this list holds.
+let idHits=[],idQuery='',idPending=false,idTimer=null;
+// histIdToken pulls a session id out of the filter: a bare id or prefix, or a pasted
+// "claude --resume <id>" command (the last word). It needs a digit so a plain folder or
+// name search doesn't go to the server.
+function histIdToken(raw){const w=(raw||'').trim().split(/\s+/).pop()||'';
+  return /^[A-Za-z0-9_-]{8,64}$/.test(w)&&/\d/.test(w)?w:'';}
+function lookupHistoryId(tok){
+  api('/api/history?id='+encodeURIComponent(tok)).then(j=>{
+    if(idQuery!==tok)return;idHits=j.history||[];idPending=false;filterHistory();
+  }).catch(()=>{if(idQuery!==tok)return;idPending=false;filterHistory();});}
 function filterHistory(){
-  const q=($('histFilter').value||'').toLowerCase(),c=$('histCards');c.innerHTML='';
-  // Search the name AND the full folder path (substring, so "exam" hits "name-example"),
-  // matching the folder-picker's path search. shortCwd is folded in so "~/foo" queries hit too.
-  const items=histList.filter(e=>(histAgent==='all'||e.agent===histAgent)&&
-    (!q||((e.name||'')+' '+(e.cwd||'')+' '+shortCwd(e.cwd)+' '+e.agent).toLowerCase().includes(q)));
-  if(!items.length){c.innerHTML='<div class="empty">no matching sessions</div>';return;}
+  const raw=$('histFilter').value||'',q=raw.trim().toLowerCase(),c=$('histCards');c.innerHTML='';
+  const tok=histIdToken(raw);
+  if(tok!==idQuery){idQuery=tok;idHits=[];clearTimeout(idTimer);idPending=!!tok;
+    if(tok)idTimer=setTimeout(()=>lookupHistoryId(tok),300);}
+  // Search the name, last prompt, id AND the full folder path (substring, so "exam" hits
+  // "name-example"), matching the folder-picker's path search. shortCwd is folded in so
+  // "~/foo" queries hit too.
+  const hit=e=>!q||((e.name||'')+' '+(e.prompt||'')+' '+(e.cwd||'')+' '+shortCwd(e.cwd)+' '+e.agent+' '+e.id).toLowerCase().includes(q)||
+    (tok&&e.id.startsWith(tok));
+  const items=histList.filter(e=>(histAgent==='all'||e.agent===histAgent)&&hit(e));
+  const have=new Set(items.map(e=>e.agent+':'+e.id));
+  for(const e of idHits)if((histAgent==='all'||e.agent===histAgent)&&!have.has(e.agent+':'+e.id))items.push(e);
+  if(!items.length){c.innerHTML=`<div class="empty">${idPending?'searching all sessions…':'no matching sessions'}</div>`;return;}
   for(const e of items){
     const d=document.createElement('div');d.className='card';d.onclick=()=>resumeSession(e);
     const tint=AGENT_TAG_TINT[e.agent];
     const tag=`<span class="agentTag"${tint?` style="color:${tint}"`:''}>${escHtml(e.agent)}</span>`;
     const where=shortCwd(e.cwd);
     d.innerHTML=`<div class="age">${escHtml(agoShort(e.modified))}</div>
-      <div class="meta"><div class="t">${escHtml(e.name||'(untitled)')}</div>
+      <div class="meta"><div class="t">${escHtml(e.name||e.prompt||'(untitled)')}</div>
       <div class="s">${escHtml(where||'~')}</div></div>
       <div style="text-align:right">${tag}</div>`;
     c.appendChild(d);
   }
 }
 async function resumeSession(e){
-  if(!confirm(`Resume ${e.agent}: ${e.name||e.id}?`))return;
+  if(!confirm(`Resume ${e.agent}: ${e.name||e.prompt||e.id}?`))return;
   // Resume in the session's own folder: a worktree session resumed from ~ runs its
   // commands in the wrong place. '~' only if the store didn't record one.
   const dir=e.cwd||'~';

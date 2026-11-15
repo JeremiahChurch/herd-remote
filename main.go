@@ -317,12 +317,19 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	entries := HistorySessions(filter, limit)
+	var entries []HistoryEntry
+	if id := strings.TrimSpace(r.URL.Query().Get("id")); id != "" {
+		// An id lookup searches every session on disk, not just the recent window.
+		entries = HistoryLookup(id)
+	} else {
+		entries = HistorySessions(filter, limit)
+	}
 	home, _ := os.UserHomeDir()
 	type outEntry struct {
 		Agent    string `json:"agent"`
 		ID       string `json:"id"`
 		Name     string `json:"name"`
+		Prompt   string `json:"prompt"`
 		Cwd      string `json:"cwd"`
 		Short    string `json:"short"` // ~-relative cwd for a compact phone list
 		Modified int64  `json:"modified"`
@@ -333,7 +340,7 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		if home != "" && strings.HasPrefix(e.Cwd, home) {
 			short = "~" + strings.TrimPrefix(e.Cwd, home)
 		}
-		list = append(list, outEntry{e.Agent, e.ID, e.Name, e.Cwd, short, e.Modified})
+		list = append(list, outEntry{e.Agent, e.ID, e.Name, e.Prompt, e.Cwd, short, e.Modified})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"history": list})
 }
