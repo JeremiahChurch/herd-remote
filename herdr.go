@@ -328,7 +328,7 @@ func listOn(m Machine, timeout time.Duration) ([]Session, error) {
 			Cwd:          cwd,
 			Number:       numbers[a.WorkspaceID],
 			Focused:      a.Focused,
-			Title:        agentTitle(a.TitleStripped, cwd),
+			Title:        agentTitle(a.Agent, a.TitleStripped, cwd),
 			StateSeq:     a.StateSeq,
 		}
 		if s.Label == "" {
@@ -343,12 +343,16 @@ func listOn(m Machine, timeout time.Duration) ([]Session, error) {
 }
 
 // agentTitle turns a pane's terminal title (herdr already strips the spinner glyph)
-// into the agent's session name. Codex joins its title items with " | " and one of
-// them is the project name ("jchurch | Fix the login bug", or "Fix it | compliance"
-// with another config); a part that is just a folder on the cwd repeats the folder
-// line, so it is dropped. At least one part always survives.
-func agentTitle(title, cwd string) string {
+// into the agent's session name. Only Codex needs parsing: it joins its title items
+// with " | " and one of them is the project name ("jchurch | Fix the login bug", or
+// "Fix it | compliance" with another config). A Codex part that is just a folder on
+// the cwd repeats the folder line, so it is dropped; at least one part survives.
+// Other agents' titles are their session names as they stand, " | " included.
+func agentTitle(agent, title, cwd string) string {
 	title = strings.TrimSpace(title)
+	if agent != "codex" {
+		return title
+	}
 	parts := strings.Split(title, " | ")
 	if len(parts) < 2 || cwd == "" {
 		return title

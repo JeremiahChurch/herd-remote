@@ -502,8 +502,15 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		agent, err := RenameSession(mid, id, body.Pane, body.Label)
-		if err == errBusy {
+		if err == errBusy || err == errRenameRunning {
 			apiError(w, http.StatusConflict, err.Error())
+			return
+		}
+		var pending errLabelsPending
+		if errors.As(err, &pending) {
+			// The session has the name; only herdr's labels are behind. 200 so the phone
+			// does not offer a retry that would type the rename command again.
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agent": agent, "warning": err.Error()})
 			return
 		}
 		if err != nil {

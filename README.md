@@ -33,7 +33,8 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
 - **Rename (✎)** renames the session itself: it types the agent's own command
   (`/rename <name>` for Claude, Codex and Muse, `/title <name>` for Hermes) and labels the
   herdr panel at the same time. A working or blocked session is refused, so the command
-  never queues behind a turn or answers a question.
+  never queues behind a turn or answers a question. If herdr's labels fail twice after the
+  session took the name, the phone says so rather than reporting a full rename.
 - **Detail view** - live scrollback (last ~50 lines, polled) plus control buttons:
   - `Enter` (approve default), `Esc` (deny/cancel), `C-c` (kick a hang)
   - `▲ ▼` to navigate a Codex approval menu, `y` / `n` / `1` `2` `3` for direct answers

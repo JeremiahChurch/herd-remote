@@ -702,7 +702,8 @@ async function runCmd(sel){
 // panel together; a busy agent is refused so the command never answers a question.
 async function renameCur(){if(!cur)return;const name=window.prompt('Rename session',cur.label||'');if(!name)return;
   try{const j=await api(sessURL(cur,cur.workspace_id,'rename'),{method:'POST',body:JSON.stringify({label:name,pane:cur.pane_id})});
-    cur.label=name;$('dTitle').textContent=name;toast(j.agent?`renamed in ${j.agent} and herdr`:'renamed in herdr');setTimeout(readScroll,600);}
+    cur.label=name;$('dTitle').textContent=name;
+    toast(j.warning||(j.agent?`renamed in ${j.agent} and herdr`:'renamed in herdr'));setTimeout(readScroll,600);}
   catch(e){toast(e.message);}}
 async function closeSession(){if(!cur)return;if(!confirm('Kill this session?'))return;
   try{await api(sessURL(cur,cur.workspace_id,'close'),{method:'POST'});toast('closed');backToList();}

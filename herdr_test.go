@@ -218,20 +218,23 @@ func TestHistoryLookupRejectsBadID(t *testing.T) {
 }
 
 func TestAgentTitle(t *testing.T) {
-	cases := []struct{ title, cwd, want string }{
-		{"reddit-edisco", "/home/jchurch/compliance", "reddit-edisco"},
-		{"jchurch | Complete mapper tool brief", "/home/jchurch", "Complete mapper tool brief"},
-		{"other | keep the prefix", "/home/jchurch", "other | keep the prefix"},
-		{"Complete archive storage brief | compliance", "/home/jc/compliance/.claude/worktrees/ai-archive", "Complete archive storage brief"},
-		{"msg-cab | Resume imports", "/home/jchurch/compliance/.claude/worktrees/msg-cab", "Resume imports"},
-		{"jchurch", "/home/jchurch", "jchurch"},
-		{"home | jchurch", "/home/jchurch", "home | jchurch"},
-		{"  spaced  ", "", "spaced"},
-		{"", "/x", ""},
+	cases := []struct{ agent, title, cwd, want string }{
+		{"claude", "reddit-edisco", "/home/jchurch/compliance", "reddit-edisco"},
+		{"codex", "jchurch | Complete mapper tool brief", "/home/jchurch", "Complete mapper tool brief"},
+		{"codex", "other | keep the prefix", "/home/jchurch", "other | keep the prefix"},
+		{"codex", "Complete archive storage brief | compliance", "/home/jc/compliance/.claude/worktrees/ai-archive", "Complete archive storage brief"},
+		{"codex", "msg-cab | Resume imports", "/home/jchurch/compliance/.claude/worktrees/msg-cab", "Resume imports"},
+		{"codex", "jchurch", "/home/jchurch", "jchurch"},
+		{"codex", "home | jchurch", "/home/jchurch", "home | jchurch"},
+		// Only Codex titles are parsed: a Claude or Muse name keeps its " | " parts.
+		{"claude", "home | migration", "/home/u/project", "home | migration"},
+		{"muse", "project | notes", "/home/u/project", "project | notes"},
+		{"claude", "  spaced  ", "", "spaced"},
+		{"codex", "", "/x", ""},
 	}
 	for _, c := range cases {
-		if got := agentTitle(c.title, c.cwd); got != c.want {
-			t.Errorf("agentTitle(%q, %q) = %q, want %q", c.title, c.cwd, got, c.want)
+		if got := agentTitle(c.agent, c.title, c.cwd); got != c.want {
+			t.Errorf("agentTitle(%q, %q, %q) = %q, want %q", c.agent, c.title, c.cwd, got, c.want)
 		}
 	}
 }

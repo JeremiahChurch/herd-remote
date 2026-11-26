@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"sync"
+	"testing"
+	"time"
+)
 
 func TestSyncName(t *testing.T) {
 	cases := []struct {
@@ -127,5 +132,97 @@ func TestNameSyncOfflineMachineIsNotNew(t *testing.T) {
 	ns.tick(box, map[string]bool{"": true, "m1": true})
 	if got := ns.tick(box, map[string]bool{"": true, "m1": true}); len(got) != 0 {
 		t.Fatalf("a machine coming back renamed its panes: %+v", got)
+	}
+}
+
+func TestNameSyncRetriesWhenOnlyTheWorkspaceLabelTook(t *testing.T) {
+	ns := newNameSyncer()
+	ns.tick(nil, local)
+	ns.tick([]Session{sess("", "w1", "w1:p1", "old", "new")}, local)
+	got := ns.tick([]Session{sess("", "w1", "w1:p1", "old", "new")}, local)
+	if len(got) != 1 {
+		t.Fatalf("want a rename, got %+v", got)
+	}
+	ns.failed(got[0]) // the workspace took "new"; the agent or pane label did not
+	took := []Session{sess("", "w1", "w1:p1", "new", "new")}
+	ns.tick(took, local)
+	if got := ns.tick(took, local); len(got) != 1 {
+		t.Fatalf("a part-failed rename was dropped because the workspace label matched: %+v", got)
+	}
+	if got := ns.tick(took, local); len(got) != 0 {
+		t.Fatalf("renamed again after the retry: %+v", got)
+	}
+}
+
+func always() bool { return true }
+
+func withFastLabels(t *testing.T) {
+	t.Helper()
+	tries, gap, wait := labelTries, labelGap, labelWait
+	labelTries, labelGap, labelWait = 3, time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { labelTries, labelGap, labelWait = tries, gap, wait })
+}
+
+func TestFinishLabelsRetriesUntilItTakes(t *testing.T) {
+	withFastLabels(t)
+	calls := 0
+	err := finishLabels("t", always, func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("pane label: boom")
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("got err=%v after %d calls, want nil after 3", err, calls)
+	}
+}
+
+func TestFinishLabelsReportsAPersistentFailure(t *testing.T) {
+	withFastLabels(t)
+	calls := 0
+	err := finishLabels("t", always, func() error { calls++; return errors.New("agent label: boom") })
+	if err == nil || calls != labelTries {
+		t.Fatalf("got err=%v after %d calls, want an error after %d", err, calls, labelTries)
+	}
+}
+
+func TestFinishLabelsAnswersBeforeTheWaitRunsOut(t *testing.T) {
+	withFastLabels(t)
+	release := make(chan struct{})
+	defer close(release)
+	start := time.Now()
+	err := finishLabels("t", always, func() error { <-release; return nil })
+	if err != errLabelsSlow {
+		t.Fatalf("got %v, want errLabelsSlow", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("waited %v for a slow herdr", d)
+	}
+}
+
+func TestFinishLabelsStopsWhenANewerRenameStarts(t *testing.T) {
+	withFastLabels(t)
+	older := newLabelGen("m/w9:p1")
+	calls := 0
+	err := finishLabels("t", older, func() error {
+		calls++
+		newLabelGen("m/w9:p1") // a second rename of the same pane starts
+		return errors.New("pane label: boom")
+	})
+	if err != errSuperseded || calls != 1 {
+		t.Fatalf("got err=%v after %d calls, want errSuperseded after 1", err, calls)
+	}
+}
+
+func TestLockWithinGivesUp(t *testing.T) {
+	var mu sync.Mutex
+	mu.Lock()
+	if lockWithin(&mu, 60*time.Millisecond) {
+		t.Fatal("took a held lock")
+	}
+	mu.Unlock()
+	if !lockWithin(&mu, 60*time.Millisecond) {
+		t.Fatal("did not take a free lock")
 	}
 }

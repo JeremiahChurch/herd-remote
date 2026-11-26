@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -60,6 +61,7 @@ type renameAction struct {
 type nameState struct {
 	applied string // the name this panel last followed
 	cand    string // a new name waiting for a second sighting
+	retry   bool   // the last rename failed part way: send it even if one label matches
 }
 
 // nameSyncer remembers the last name seen for every pane. Not safe for concurrent
@@ -73,10 +75,12 @@ func newNameSyncer() *nameSyncer {
 	return &nameSyncer{primed: map[string]bool{}, panes: map[string]*nameState{}}
 }
 
-// failed forgets a rename that did not go through, so the next ticks try it again.
+// failed forgets a rename that did not fully go through, so the next ticks send it
+// again. retry matters when the workspace label took but the agent or pane label did
+// not: the listing then shows the new name, and without it the stale labels would stay.
 func (ns *nameSyncer) failed(a renameAction) {
 	if st := ns.panes[a.Machine+"/"+a.PaneID]; st != nil {
-		st.applied = ""
+		st.applied, st.retry = "", true
 	}
 }
 
@@ -122,9 +126,10 @@ func (ns *nameSyncer) tick(sessions []Session, answered map[string]bool) []renam
 		if !whole {
 			current = s.Name
 		}
-		if name == current {
+		if name == current && !st.retry {
 			continue
 		}
+		st.retry = false
 		out = append(out, renameAction{
 			Machine: s.Machine, WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Label: name,
 			Workspace: whole,
@@ -175,7 +180,8 @@ func startNameSync() {
 }
 
 // renamePanel puts a name on the agent and pane labels, and on the workspace when the
-// workspace holds only this agent (a shared workspace keeps its own name).
+// workspace holds only this agent (a shared workspace keeps its own name). Any failed
+// call is an error, so the loop sends the whole rename again; each call is idempotent.
 func renamePanel(a renameAction) error {
 	if err := validateLabel(a.Label); err != nil {
 		return err
@@ -185,10 +191,11 @@ func renamePanel(a renameAction) error {
 			return err
 		}
 	}
-	_, errA := herdrOn(a.Machine, "agent", "rename", a.PaneID, a.Label)
-	_, errP := herdrOn(a.Machine, "pane", "rename", a.PaneID, a.Label)
-	if !a.Workspace && errA != nil && errP != nil {
-		return errP // nothing was renamed
+	if _, err := herdrOn(a.Machine, "agent", "rename", a.PaneID, a.Label); err != nil {
+		return fmt.Errorf("agent label: %w", err)
+	}
+	if _, err := herdrOn(a.Machine, "pane", "rename", a.PaneID, a.Label); err != nil {
+		return fmt.Errorf("pane label: %w", err)
 	}
 	return nil
 }
@@ -201,6 +208,113 @@ var renameCommands = map[string]string{
 	"claude": "/rename", "codex": "/rename", "muse": "/rename", "hermes": "/title",
 }
 
+// errLabelsPending means the agent took the new name but herdr's labels had not all
+// changed when the phone was answered. The rename command is not typed again; the
+// phone is told herdr may still show the old name.
+type errLabelsPending struct{ err error }
+
+func (e errLabelsPending) Error() string {
+	return "renamed in the session, but herdr may still show the old name: " + e.err.Error()
+}
+
+// Labelling herdr after the agent took a name: up to labelTries attempts, labelGap
+// apart, in the background. The phone waits labelWait at most, well inside its own
+// 15s request timeout (a herdr call alone may take up to cliTimout), so a slow herdr
+// shows as a warning rather than a timed-out request the user would repeat.
+var (
+	labelTries = 3
+	labelGap   = 2 * time.Second
+	labelWait  = 4 * time.Second
+)
+
+var errLabelsSlow = fmt.Errorf("herdr is slow to answer; still retrying")
+
+// errSuperseded ends a label retry once a newer rename of the same pane has started,
+// so an older, slower rename never writes its name over the newer one.
+var errSuperseded = fmt.Errorf("superseded by a newer rename")
+
+// labelGens counts renames per pane (machine + "/" + pane id).
+var labelGens = struct {
+	sync.Mutex
+	m map[string]uint64
+}{m: map[string]uint64{}}
+
+// paneLocks serialize phone renames of one pane: typing the rename command and each
+// attempt at herdr's labels hold it. A rename's generation is taken under the same
+// lock as its command, so generation order is command order, and every label attempt
+// rechecks its generation under the lock - an older rename can never write after a
+// newer one has, even if its herdr calls were mid-flight when the newer one started.
+var paneLocks sync.Map // machine + "/" + pane id -> *sync.Mutex
+
+func paneLock(key string) *sync.Mutex {
+	mu, _ := paneLocks.LoadOrStore(key, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
+// errRenameRunning refuses a phone rename while another rename of the same pane
+// still holds herdr up, so the request never queues past the phone's timeout.
+var errRenameRunning = fmt.Errorf("another rename of this session is still running - try again in a moment")
+
+// lockWithin takes mu if it frees up within d.
+func lockWithin(mu *sync.Mutex, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for !mu.TryLock() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return true
+}
+
+// newLabelGen starts a rename of key and returns a check that stays true until the
+// next rename of the same key starts.
+func newLabelGen(key string) (current func() bool) {
+	labelGens.Lock()
+	labelGens.m[key]++
+	gen := labelGens.m[key]
+	labelGens.Unlock()
+	return func() bool {
+		labelGens.Lock()
+		defer labelGens.Unlock()
+		return labelGens.m[key] == gen
+	}
+}
+
+// finishLabels runs label until it succeeds or runs out of tries, and returns nil if
+// it succeeded within labelWait, errLabelsSlow if it was still going, or its last
+// error. The retries carry on after a slow answer, but stop as soon as current()
+// turns false; a final failure is logged.
+func finishLabels(what string, current func() bool, label func() error) error {
+	tries, gap, wait := labelTries, labelGap, labelWait // read once, outside the goroutine
+	done := make(chan error, 1)
+	go func() {
+		var err error
+		for i := 0; i < tries; i++ {
+			if i > 0 {
+				time.Sleep(gap)
+			}
+			if !current() {
+				err = errSuperseded
+				break
+			}
+			if err = label(); err == nil || err == errSuperseded {
+				break
+			}
+		}
+		if err != nil {
+			log.Printf("rename: %s herdr labels: %v", what, err)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(wait):
+		return errLabelsSlow
+	}
+}
+
 // errBusy means the agent is mid-turn or waiting on a question: typing the rename
 // command now would queue behind the turn or answer the question.
 var errBusy = fmt.Errorf("the session is busy - rename it when it is idle")
@@ -208,7 +322,9 @@ var errBusy = fmt.Errorf("the session is busy - rename it when it is idle")
 // RenameSession renames a session from the phone. It types the agent's own rename
 // command, so the name lives in the session itself (resume lists, the agent's title),
 // and also labels the herdr panel at once rather than waiting for the sync loop. A pane
-// with no known agent only gets the herdr labels. Returns the agent it renamed, if any.
+// with no known agent only gets the herdr labels. Returns the agent it renamed, if any;
+// with an agent, an errLabelsPending error means the session took the name and herdr
+// did not.
 func RenameSession(machine, workspaceID, paneID, label string) (string, error) {
 	label = strings.TrimSpace(label)
 	if err := validateLabel(label); err != nil {
@@ -216,33 +332,60 @@ func RenameSession(machine, workspaceID, paneID, label string) (string, error) {
 	}
 	agent, status := "", ""
 	if paneID != "" {
-		agent, status = paneAgentStatus(machine, paneID)
+		var err error
+		// A failed lookup must not read as "no agent": that would skip the session
+		// rename and fall back to herdr labels alone.
+		if agent, status, err = paneAgentStatus(machine, paneID); err != nil {
+			return "", fmt.Errorf("could not read the session's agent: %w", err)
+		}
 	}
 	cmd := renameCommands[agent]
-	if cmd != "" {
-		if status != "idle" && status != "done" {
-			return "", errBusy
-		}
-		if err := SendPrompt(machine, paneID, cmd+" "+label); err != nil {
-			return "", err
-		}
-	}
 	if cmd == "" {
 		return "", Rename(machine, workspaceID, paneID, label)
 	}
-	// The agent is renamed now, so a failed herdr label must not read as a failed
-	// rename (a retry would type the command again); name sync relabels herdr anyway.
-	if err := Rename(machine, workspaceID, paneID, label); err != nil {
-		log.Printf("rename: %s %s herdr labels: %v (name sync will retry)", machine, paneID, err)
+	if status != "idle" && status != "done" {
+		return "", errBusy
+	}
+	key := machine + "/" + paneID
+	mu := paneLock(key)
+	if !lockWithin(mu, agentLookupTimeout) {
+		return "", errRenameRunning
+	}
+	current := newLabelGen(key)
+	err := SendPrompt(machine, paneID, cmd+" "+label)
+	mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	// The agent is renamed now. Name sync cannot repair the herdr labels for Hermes (its
+	// title is invisible to herdr) or with the sync off, so every label must take - the
+	// workspace, agent and pane (renamePanel fails on any of them, where Rename only
+	// checks the workspace) - and anything short of that is reported as a partial rename.
+	a := renameAction{Machine: machine, WorkspaceID: workspaceID, PaneID: paneID, Label: label, Workspace: true}
+	attempt := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !current() {
+			return errSuperseded
+		}
+		return renamePanel(a)
+	}
+	if err := finishLabels(machine+" "+paneID, current, attempt); err != nil {
+		return agent, errLabelsPending{err}
 	}
 	return agent, nil
 }
 
-// paneAgentStatus reads a pane's agent and its live status ("" when it has no agent).
-func paneAgentStatus(machine, pane string) (agent, status string) {
-	out, err := herdrOn(machine, "agent", "get", pane)
+// agentLookupTimeout bounds the status check before the rename command is typed, so
+// a stuck herdr fails the request early instead of eating the phone's 15s timeout.
+const agentLookupTimeout = 4 * time.Second
+
+// paneAgentStatus reads a pane's agent and its live status. agent is "" when the pane
+// has no agent; err means the lookup itself failed.
+func paneAgentStatus(machine, pane string) (agent, status string, err error) {
+	out, err := herdrOnT(agentLookupTimeout, machine, "agent", "get", pane)
 	if err != nil {
-		return "", ""
+		return "", "", err
 	}
 	var r struct {
 		Result struct {
@@ -252,8 +395,8 @@ func paneAgentStatus(machine, pane string) (agent, status string) {
 			} `json:"agent"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(out, &r) != nil {
-		return "", ""
+	if err := json.Unmarshal(out, &r); err != nil {
+		return "", "", fmt.Errorf("parse agent get: %w", err)
 	}
-	return r.Result.Agent.Agent, r.Result.Agent.AgentStatus
+	return r.Result.Agent.Agent, r.Result.Agent.AgentStatus, nil
 }
