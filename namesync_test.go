@@ -21,7 +21,7 @@ func TestSyncName(t *testing.T) {
 }
 
 func sess(machine, ws, pane, label, title string) Session {
-	return Session{Machine: machine, WorkspaceID: ws, PaneID: pane, Label: label, Title: title, Cwd: "/home/jc/repo"}
+	return Session{Machine: machine, WorkspaceID: ws, PaneID: pane, Label: label, Name: label, Title: title, Cwd: "/home/jc/repo"}
 }
 
 var local = map[string]bool{"": true}
@@ -82,12 +82,40 @@ func TestNameSyncSharedWorkspaceKeepsItsName(t *testing.T) {
 	ns.tick(nil, local)
 	p := []Session{
 		sess("", "w5", "w5:p1", "team", "first agent"),
-		sess("", "w5", "w5:p2", "team", "team"),
+		sess("", "w5", "w5:p2", "team", "team"), // its agent name is already "team"
 	}
 	ns.tick(p, local)
 	got := ns.tick(p, local)
 	if len(got) != 1 || got[0].Workspace {
 		t.Fatalf("want a pane-only rename in a shared workspace, got %+v", got)
+	}
+}
+
+func TestNameSyncMachineOfflineAtStartup(t *testing.T) {
+	ns := newNameSyncer()
+	ns.tick(nil, local) // m1 did not answer at startup
+	box := []Session{sess("m1", "w1", "w1:p1", "hand-set", "agent-name")}
+	up := map[string]bool{"": true, "m1": true}
+	for i := 0; i < 3; i++ {
+		if got := ns.tick(box, up); len(got) != 0 {
+			t.Fatalf("a machine answering late had its panes renamed: %+v", got)
+		}
+	}
+}
+
+func TestNameSyncRetriesAFailedRename(t *testing.T) {
+	ns := newNameSyncer()
+	ns.tick(nil, local)
+	p := []Session{sess("", "w1", "w1:p1", "old", "new")}
+	ns.tick(p, local)
+	got := ns.tick(p, local)
+	if len(got) != 1 {
+		t.Fatalf("want a rename, got %+v", got)
+	}
+	ns.failed(got[0])
+	ns.tick(p, local)
+	if got := ns.tick(p, local); len(got) != 1 {
+		t.Fatalf("a failed rename was not tried again: %+v", got)
 	}
 }
 

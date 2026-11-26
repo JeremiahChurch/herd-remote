@@ -52,7 +52,7 @@ var reLabelStrip = regexp.MustCompile(`[^A-Za-z0-9 ._:/-]+`)
 func sanitizeLabel(s string) string {
 	s = reLabelStrip.ReplaceAllString(s, " ")
 	s = strings.Join(strings.Fields(s), " ") // collapse whitespace runs + trim
-	s = strings.TrimSpace(strings.TrimLeft(s, "-"))
+	s = strings.TrimLeft(s, "- ")            // "- -x" must not leave a leading '-' behind
 	if len(s) > 100 {
 		s = strings.TrimSpace(s[:100])
 	}

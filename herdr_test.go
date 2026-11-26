@@ -235,3 +235,12 @@ func TestAgentTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeLabelLeadingDashes(t *testing.T) {
+	for _, in := range []string{"- -draft notes", "--x", " - y"} {
+		got := sanitizeLabel(in)
+		if validateLabel(got) != nil && got != "" {
+			t.Errorf("sanitizeLabel(%q) = %q, still invalid", in, got)
+		}
+	}
+}

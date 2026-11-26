@@ -65,16 +65,27 @@ type nameState struct {
 // nameSyncer remembers the last name seen for every pane. Not safe for concurrent
 // ticks; the loop runs one at a time.
 type nameSyncer struct {
-	primed bool
+	primed map[string]bool       // machines whose first listing has been taken as is
 	panes  map[string]*nameState // machine + "/" + pane id
 }
 
-func newNameSyncer() *nameSyncer { return &nameSyncer{panes: map[string]*nameState{}} }
+func newNameSyncer() *nameSyncer {
+	return &nameSyncer{primed: map[string]bool{}, panes: map[string]*nameState{}}
+}
+
+// failed forgets a rename that did not go through, so the next ticks try it again.
+func (ns *nameSyncer) failed(a renameAction) {
+	if st := ns.panes[a.Machine+"/"+a.PaneID]; st != nil {
+		st.applied = ""
+	}
+}
 
 // tick takes one listing and returns the panels to relabel. A new name has to show
 // on two listings in a row, so a title caught mid-redraw never renames anything.
 // answered holds the machines that listed their sessions ("" = this box); a pane on a
 // machine that did not answer is kept, so its return is not mistaken for a new pane.
+// Priming is per machine: a machine that was offline at startup, or added later, has
+// its panes taken as they are on its first answer, like this box's at startup.
 func (ns *nameSyncer) tick(sessions []Session, answered map[string]bool) []renameAction {
 	agentsIn := map[string]int{}
 	for _, s := range sessions {
@@ -90,8 +101,8 @@ func (ns *nameSyncer) tick(sessions []Session, answered map[string]bool) []renam
 		if st == nil {
 			st = &nameState{}
 			ns.panes[key] = st
-			if !ns.primed {
-				st.applied = name // open at startup: take it as it is
+			if !ns.primed[s.Machine] {
+				st.applied = name // open when its machine first answered: take it as it is
 				continue
 			}
 		}
@@ -104,12 +115,19 @@ func (ns *nameSyncer) tick(sessions []Session, answered map[string]bool) []renam
 			continue
 		}
 		st.applied, st.cand = name, ""
-		if name == s.Label {
+		whole := agentsIn[s.Machine+"/"+s.WorkspaceID] == 1
+		// Label is the workspace's name; in a shared workspace the pane's own herdr
+		// name is the agent name.
+		current := s.Label
+		if !whole {
+			current = s.Name
+		}
+		if name == current {
 			continue
 		}
 		out = append(out, renameAction{
 			Machine: s.Machine, WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Label: name,
-			Workspace: agentsIn[s.Machine+"/"+s.WorkspaceID] == 1,
+			Workspace: whole,
 		})
 	}
 	for key := range ns.panes {
@@ -118,7 +136,9 @@ func (ns *nameSyncer) tick(sessions []Session, answered map[string]bool) []renam
 			delete(ns.panes, key)
 		}
 	}
-	ns.primed = true
+	for m := range answered {
+		ns.primed[m] = true
+	}
 	return out
 }
 
@@ -142,6 +162,7 @@ func startNameSync() {
 				}
 				for _, a := range ns.tick(sessions, answered) {
 					if err := renamePanel(a); err != nil {
+						ns.failed(a)
 						log.Printf("name sync: %s %s -> %q: %v", a.Machine, a.PaneID, a.Label, err)
 					} else {
 						log.Printf("name sync: %s %s -> %q", a.Machine, a.PaneID, a.Label)
@@ -164,8 +185,11 @@ func renamePanel(a renameAction) error {
 			return err
 		}
 	}
-	_, _ = herdrOn(a.Machine, "agent", "rename", a.PaneID, a.Label)
-	_, _ = herdrOn(a.Machine, "pane", "rename", a.PaneID, a.Label)
+	_, errA := herdrOn(a.Machine, "agent", "rename", a.PaneID, a.Label)
+	_, errP := herdrOn(a.Machine, "pane", "rename", a.PaneID, a.Label)
+	if !a.Workspace && errA != nil && errP != nil {
+		return errP // nothing was renamed
+	}
 	return nil
 }
 
@@ -203,11 +227,13 @@ func RenameSession(machine, workspaceID, paneID, label string) (string, error) {
 			return "", err
 		}
 	}
-	if err := Rename(machine, workspaceID, paneID, label); err != nil {
-		return "", err
-	}
 	if cmd == "" {
-		return "", nil
+		return "", Rename(machine, workspaceID, paneID, label)
+	}
+	// The agent is renamed now, so a failed herdr label must not read as a failed
+	// rename (a retry would type the command again); name sync relabels herdr anyway.
+	if err := Rename(machine, workspaceID, paneID, label); err != nil {
+		log.Printf("rename: %s %s herdr labels: %v (name sync will retry)", machine, paneID, err)
 	}
 	return agent, nil
 }
