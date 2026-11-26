@@ -25,7 +25,10 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
   herdr workspace, agent and pane within about 10 seconds. Only a change counts: panels
   open when the server starts keep their names until their agent's name next changes, and a
   name typed straight into herdr stays until then too. A workspace holding more than one
-  agent keeps its own name. Hermes keeps its `/title` out of the terminal title, so herdr
+  agent keeps its own name. Automatic names count as changes too: a Codex thread's
+  generated name, or a Claude session's ai-title when it was started without a name, relabel
+  the panel. A Claude started by herd-spawn keeps its label, because `--name` outranks
+  the ai-title. Hermes keeps its `/title` out of the terminal title, so herdr
   cannot see it. Turn the sync off with `HERD_REMOTE_NAME_SYNC=0`.
 - **Rename (✎)** renames the session itself: it types the agent's own command
   (`/rename <name>` for Claude, Codex and Muse, `/title <name>` for Hermes) and labels the
