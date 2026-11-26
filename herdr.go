@@ -40,6 +40,14 @@ type Session struct {
 	Cwd          string `json:"cwd"`     // foreground cwd
 	Number       int    `json:"number"`  // stable-ish nav number
 	Focused      bool   `json:"focused"` // currently focused in the TUI
+	// Title is the agent's own session name, read from the terminal title it sets:
+	// Claude shows its /rename name (else its ai-title), Codex "<folder> | <thread>".
+	// It tracks renames made inside the agent, so the phone can search on it.
+	Title string `json:"title,omitempty"`
+	// StateSeq is herdr's state_change_seq: it grows each time any pane's status
+	// changes, so a higher number means this pane started or stopped more recently.
+	// Only comparable between sessions on the same machine.
+	StateSeq int64 `json:"state_seq"`
 }
 
 // run executes a herdr subcommand and returns raw stdout.
@@ -182,6 +190,8 @@ type agentListResp struct {
 			Name          string `json:"name"`
 			PaneID        string `json:"pane_id"`
 			WorkspaceID   string `json:"workspace_id"`
+			TitleStripped string `json:"terminal_title_stripped"`
+			StateSeq      int64  `json:"state_change_seq"`
 		} `json:"agents"`
 	} `json:"result"`
 }
@@ -318,6 +328,8 @@ func listOn(m Machine, timeout time.Duration) ([]Session, error) {
 			Cwd:          cwd,
 			Number:       numbers[a.WorkspaceID],
 			Focused:      a.Focused,
+			Title:        agentTitle(a.TitleStripped, cwd),
+			StateSeq:     a.StateSeq,
 		}
 		if s.Label == "" {
 			s.Label = a.Name
@@ -328,6 +340,35 @@ func listOn(m Machine, timeout time.Duration) ([]Session, error) {
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// agentTitle turns a pane's terminal title (herdr already strips the spinner glyph)
+// into the agent's session name. Codex joins its title items with " | " and one of
+// them is the project name ("jchurch | Fix the login bug", or "Fix it | compliance"
+// with another config); a part that is just a folder on the cwd repeats the folder
+// line, so it is dropped. At least one part always survives.
+func agentTitle(title, cwd string) string {
+	title = strings.TrimSpace(title)
+	parts := strings.Split(title, " | ")
+	if len(parts) < 2 || cwd == "" {
+		return title
+	}
+	dirs := map[string]bool{}
+	for _, d := range strings.Split(filepath.ToSlash(cwd), "/") {
+		if d != "" {
+			dirs[d] = true
+		}
+	}
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" && !dirs[p] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		return title
+	}
+	return strings.Join(kept, " | ")
 }
 
 // ReadPane returns the visible screen text for a pane.
@@ -451,9 +492,8 @@ func SendKey(machine, pane, key string) error {
 
 // Rename updates every place herdr shows a name for a session: the workspace
 // label (left-nav), the agent label, and the pane label (both shown on pane
-// borders / the agents panel). herdr has no way to rename an agent's *internal*
-// session (Claude/Codex don't expose that), but this keeps all herdr surfaces
-// consistent instead of leaving the stale folder name on the pane border.
+// borders / the agents panel). It touches herdr only; RenameSession also renames
+// the agent's own session, and namesync.go keeps herdr following later renames.
 func Rename(machine, workspaceID, paneID, label string) error {
 	label = strings.TrimSpace(label)
 	if err := validateLabel(label); err != nil {

@@ -497,11 +497,20 @@ func handleSessionAction(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusBadRequest, "bad body")
 			return
 		}
-		if err := Rename(mid, id, body.Pane, body.Label); err != nil {
+		if body.Pane != "" && !reHerdrID.MatchString(body.Pane) {
+			apiError(w, http.StatusBadRequest, "bad pane")
+			return
+		}
+		agent, err := RenameSession(mid, id, body.Pane, body.Label)
+		if err == errBusy {
+			apiError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err != nil {
 			apiError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agent": agent})
 
 	case "close":
 		if err := CloseWorkspace(mid, id); err != nil {
@@ -544,6 +553,8 @@ func main() {
 	if loginPass == "" {
 		log.Printf("WARNING: no password set. Set HERD_REMOTE_PASSWORD or write %s/password", configDir())
 	}
+
+	startNameSync()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)

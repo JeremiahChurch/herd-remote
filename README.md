@@ -15,6 +15,22 @@ It's a single Go binary that shells out to the `herdr` socket-API CLI (and the
 
 - **Session list** - every agent-bearing pane, colored by status, blocked ones first
   (blocked pulses red). Auto-refreshes.
+- **Search and sort** - the box above the list matches the herdr name, the agent's own
+  session name (a Claude `/rename` or ai-title, a Codex thread name, read from the pane's
+  terminal title), the folder, the agent and the machine. The picker beside it orders cards
+  inside each status section by sidebar order (default), recent activity, name or folder,
+  and the phone remembers the choice.
+- **Name sync** - a herdr panel follows its agent's session name. Claude, Codex and Muse
+  write that name into the terminal title, so a `/rename` typed in the agent relabels the
+  herdr workspace, agent and pane within about 10 seconds. Only a change counts: panels
+  open when the server starts keep their names until their agent's name next changes, and a
+  name typed straight into herdr stays until then too. A workspace holding more than one
+  agent keeps its own name. Hermes keeps its `/title` out of the terminal title, so herdr
+  cannot see it. Turn the sync off with `HERD_REMOTE_NAME_SYNC=0`.
+- **Rename (✎)** renames the session itself: it types the agent's own command
+  (`/rename <name>` for Claude, Codex and Muse, `/title <name>` for Hermes) and labels the
+  herdr panel at the same time. A working or blocked session is refused, so the command
+  never queues behind a turn or answers a question.
 - **Detail view** - live scrollback (last ~50 lines, polled) plus control buttons:
   - `Enter` (approve default), `Esc` (deny/cancel), `C-c` (kick a hang)
   - `▲ ▼` to navigate a Codex approval menu, `y` / `n` / `1` `2` `3` for direct answers
@@ -222,7 +238,7 @@ Set-NetFirewallRule -DisplayName 'WSL-Expose 8787' -RemoteAddress '10.10.69.AA',
 | GET | `/api/sessions/{pane}/read?lines=N` | screen text |
 | POST | `/api/sessions/{pane}/prompt` | `{text}` typed + Enter |
 | POST | `/api/sessions/{pane}/key` | `{key}` one allowed control key |
-| POST | `/api/sessions/{wid}/rename` | `{label}` nav label |
+| POST | `/api/sessions/{wid}/rename` | `{label,pane}` agent rename command + herdr labels (409 while busy) |
 | POST | `/api/sessions/{wid}/close` | kill workspace |
 | GET | `/api/folders` | spawn target folders |
 | GET | `/api/history?dir=&limit=` | past sessions (all agents) for resume |
