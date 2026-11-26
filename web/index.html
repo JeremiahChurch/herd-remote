@@ -115,6 +115,11 @@
   #listView header h1{flex:1 1 auto;min-width:0}
   #listView header .sp{display:none}
   #listView header button{flex:none;font-size:13px;padding:8px 8px;white-space:nowrap}
+  /* sessions list: search box and sort picker share one row under the header */
+  .listbar{display:flex;gap:8px;padding:10px 12px 0;max-width:760px;margin:0 auto;width:100%}
+  .listbar .list-input{margin:0;padding:9px 10px}
+  .listbar #listFilter{flex:1 1 auto;min-width:0}
+  .listbar #listSort{flex:none;width:auto;max-width:42%}
   #msgBadge{font-size:10px;padding:1px 5px;margin-left:4px;letter-spacing:0;vertical-align:1px}
   #msgBadge.hot{color:#fff;background:var(--blocked);border-color:var(--blocked)}
   /* messages: one tone per state family so a row reads at a glance */
@@ -177,6 +182,16 @@
     <button onclick="showSpawn()">＋ Spawn</button>
     <button onclick="refresh()" aria-label="Refresh sessions">↻</button>
   </header>
+  <div class="listbar">
+    <input id="listFilter" class="list-input" type="search" placeholder="search name, folder, session…"
+      oninput="paintCards()" autocapitalize="off" autocomplete="off" spellcheck="false">
+    <select id="listSort" class="list-input" onchange="setListSort(this.value)" aria-label="Sort sessions within each status">
+      <option value="nav">Sidebar order</option>
+      <option value="recent">Recent activity</option>
+      <option value="name">Name A-Z</option>
+      <option value="folder">Folder A-Z</option>
+    </select>
+  </div>
   <div class="scrollwrap"><div class="wrap" id="cards"></div></div>
 </div>
 
@@ -422,14 +437,46 @@ $('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 
 // ---------- list ----------
 async function refresh(){refreshMessageBadge();try{const j=await api('/api/sessions');renderCards(j.sessions||[],j.machines||[]);}catch(e){if(e.message!=='unauth'&&!/failed to fetch/i.test(e.message))toast(e.message);}}
-function renderCards(sessions,machines){
+// The list keeps its status sections (blocked, working, idle, done) whatever the sort;
+// the picker only orders cards inside a section. The server sends sidebar order, so
+// "nav" keeps it as is. The choice is a per-phone convenience, so localStorage is fine.
+const STATUS_RANK={blocked:0,working:1,idle:2,done:3};
+const SORTS=['nav','recent','name','folder'];
+let lastSessions=[],lastMachines=[];
+let listSort=(()=>{try{const v=localStorage.getItem('listSort');return SORTS.includes(v)?v:'nav';}catch(e){return 'nav';}})();
+$('listSort').value=listSort;
+function setListSort(v){listSort=SORTS.includes(v)?v:'nav';try{localStorage.setItem('listSort',listSort);}catch(e){}paintCards();}
+function sessName(s){return s.label||s.name||'';}
+function sortSessions(list){
+  const cmp=(a,b)=>a.localeCompare(b,undefined,{sensitivity:'base',numeric:true});
+  const byName=(a,b)=>cmp(sessName(a),sessName(b))||cmp(shortCwd(a.cwd),shortCwd(b.cwd));
+  const byFolder=(a,b)=>cmp(shortCwd(a.cwd),shortCwd(b.cwd))||cmp(sessName(a),sessName(b));
+  // state_seq only means something within one herdr server, so recency stays per machine.
+  const byRecent=(a,b)=>((a.machine||'')<(b.machine||'')?-1:(a.machine||'')>(b.machine||'')?1:0)||((b.state_seq||0)-(a.state_seq||0));
+  const within={name:byName,folder:byFolder,recent:byRecent}[listSort];
+  const idx=new Map(list.map((s,i)=>[s,i]));
+  return list.slice().sort((a,b)=>((STATUS_RANK[a.status]??4)-(STATUS_RANK[b.status]??4))
+    ||(within?within(a,b):0)||(idx.get(a)-idx.get(b)));
+}
+// Every word must appear somewhere: the herdr name, the agent's own session name,
+// the folder, the agent, the machine, or the pane id.
+function sessMatches(s,words){
+  const hay=[s.label,s.name,s.title,s.cwd,shortCwd(s.cwd),s.agent,s.machine_label,s.pane_id].filter(Boolean).join(' ').toLowerCase();
+  return words.every(w=>hay.includes(w));
+}
+function renderCards(sessions,machines){lastSessions=sessions||[];lastMachines=machines||[];paintCards();}
+function paintCards(){
+  const sessions=lastSessions,machines=lastMachines;
   const c=$('cards');c.innerHTML='';
   // A machine that didn't answer is named, not silently dropped, so "no Shop PC sessions"
   // and "Shop PC is offline" never look the same.
   for(const m of machines||[])if(m.error){const w=document.createElement('div');w.className='machWarn';
     w.textContent=`⚠ ${m.label} unreachable - its sessions are hidden`;w.title=m.error;c.appendChild(w);}
   if(!sessions.length){c.insertAdjacentHTML('beforeend','<div class="empty">no sessions</div>');return;}
-  for(const s of sessions){
+  const words=($('listFilter').value||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown=sortSessions(words.length?sessions.filter(s=>sessMatches(s,words)):sessions);
+  if(!shown.length){c.insertAdjacentHTML('beforeend','<div class="empty">no sessions match</div>');return;}
+  for(const s of shown){
     const d=document.createElement('div');d.className='card';d.onclick=()=>openDetail(s);
     const st=STATUSES.includes(s.status)?s.status:'unknown';
     const pid=s.pane_id?`<span class="pid">${escHtml(s.pane_id)}</span>`:'';
@@ -651,9 +698,12 @@ async function runCmd(sel){
   try{await api(sessURL(cur,cur.pane_id,'prompt'),{method:'POST',body:JSON.stringify({text:val})});
     toast(val);setTimeout(readScroll,400);}
   catch(e){toast(e.message);}}
+// Renames the agent's own session (it types the agent's rename command) and the herdr
+// panel together; a busy agent is refused so the command never answers a question.
 async function renameCur(){if(!cur)return;const name=window.prompt('Rename session',cur.label||'');if(!name)return;
-  try{await api(sessURL(cur,cur.workspace_id,'rename'),{method:'POST',body:JSON.stringify({label:name,pane:cur.pane_id})});
-    cur.label=name;$('dTitle').textContent=name;toast('renamed');}catch(e){toast(e.message);}}
+  try{const j=await api(sessURL(cur,cur.workspace_id,'rename'),{method:'POST',body:JSON.stringify({label:name,pane:cur.pane_id})});
+    cur.label=name;$('dTitle').textContent=name;toast(j.agent?`renamed in ${j.agent} and herdr`:'renamed in herdr');setTimeout(readScroll,600);}
+  catch(e){toast(e.message);}}
 async function closeSession(){if(!cur)return;if(!confirm('Kill this session?'))return;
   try{await api(sessURL(cur,cur.workspace_id,'close'),{method:'POST'});toast('closed');backToList();}
   catch(e){toast(e.message);}}

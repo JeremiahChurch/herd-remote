@@ -216,3 +216,31 @@ func TestHistoryLookupRejectsBadID(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentTitle(t *testing.T) {
+	cases := []struct{ title, cwd, want string }{
+		{"reddit-edisco", "/home/jchurch/compliance", "reddit-edisco"},
+		{"jchurch | Complete mapper tool brief", "/home/jchurch", "Complete mapper tool brief"},
+		{"other | keep the prefix", "/home/jchurch", "other | keep the prefix"},
+		{"Complete archive storage brief | compliance", "/home/jc/compliance/.claude/worktrees/ai-archive", "Complete archive storage brief"},
+		{"msg-cab | Resume imports", "/home/jchurch/compliance/.claude/worktrees/msg-cab", "Resume imports"},
+		{"jchurch", "/home/jchurch", "jchurch"},
+		{"home | jchurch", "/home/jchurch", "home | jchurch"},
+		{"  spaced  ", "", "spaced"},
+		{"", "/x", ""},
+	}
+	for _, c := range cases {
+		if got := agentTitle(c.title, c.cwd); got != c.want {
+			t.Errorf("agentTitle(%q, %q) = %q, want %q", c.title, c.cwd, got, c.want)
+		}
+	}
+}
+
+func TestSanitizeLabelLeadingDashes(t *testing.T) {
+	for _, in := range []string{"- -draft notes", "--x", " - y"} {
+		got := sanitizeLabel(in)
+		if validateLabel(got) != nil && got != "" {
+			t.Errorf("sanitizeLabel(%q) = %q, still invalid", in, got)
+		}
+	}
+}
